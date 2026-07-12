@@ -1,0 +1,70 @@
+package tool
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+)
+
+type ListDir struct{}
+
+type ListDirArgs struct {
+	Path string `json:"path"`
+}
+
+func NewListDirTool() *ListDir {
+	return &ListDir{}
+}
+
+func (l *ListDir) Name() string {
+	return "list_dir"
+}
+
+func (l *ListDir) Description() string {
+	return "list directory contents"
+}
+
+func (l *ListDir) Parameters() map[string]interface{} {
+	return map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"path": map[string]interface{}{
+				"type":        "string",
+				"description": "relative path to directory",
+			},
+		},
+		"required": []string{"path"},
+	}
+}
+
+func (l *ListDir) Call(ctx context.Context, args string) (string, error) {
+	var arg ListDirArgs
+	if err := json.Unmarshal([]byte(args), &arg); err != nil {
+		return "", err
+	}
+	if arg.Path == "" {
+		return "path is empty", errors.New("path is empty")
+	}
+	entries, err := os.ReadDir(arg.Path)
+	if err != nil {
+		return err.Error(), err
+	}
+	result := ""
+	for _, entry := range entries {
+		if entry.IsDir() {
+			result += fmt.Sprintf("[DIR]  %s\n", entry.Name())
+		} else {
+			info, err := entry.Info()
+			if err != nil {
+				continue
+			}
+			result += fmt.Sprintf("[FILE] %s (%d bytes)\n", entry.Name(), info.Size())
+		}
+	}
+	if result == "" {
+		return "(empty directory)", nil
+	}
+	return result, nil
+}

@@ -1,0 +1,21 @@
+请审查以下代码，找出潜在问题。
+
+## 代码信息
+- 文件名：{{.Filename}}
+- 语言：{{.Lang}}
+
+## 审查要求
+1. 识别：bug、security、performance、style、maintainability 类问题
+2. 每个问题包含：文件名、行号、严重级别、类别、描述、修复建议
+...
+
+## 输出格式
+严格按以下 JSON 格式输出，不要输出 JSON 以外的任何内容：
+{"summary":"...","issues":[{"file":"...","line":0,"message": "...",
+"suggestion": "...", "severity": "info", "category": "bug"}}]}
+
+## 代码内容
+
+```{{.Lang}}
+{{.Code}}
+```
