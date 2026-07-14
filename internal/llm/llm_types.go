@@ -1,5 +1,10 @@
 package llm
 
+import (
+	"fmt"
+	"strings"
+)
+
 type Role string
 
 const (
@@ -97,6 +102,7 @@ func AssistantMessageWithToolCall(modelResponse string, toolCalls []ToolCall) Me
 	return Message{
 		Role:      RoleAssistant,
 		ToolCalls: toolCalls,
+		Content:   modelResponse,
 	}
 }
 
@@ -106,4 +112,17 @@ func ToolMessage(callId string, callResult string) Message {
 		Content:    callResult,
 		ToolCallID: callId,
 	}
+}
+
+func MessagesToString(messages []Message) string {
+	var sb strings.Builder
+	for _, msg := range messages {
+		if msg.Role == RoleTool {
+			continue
+		}
+		// [assistant] xxx
+		// [user] xxx
+		sb.WriteString(fmt.Sprintf("[%v] %v\n", msg.Role, msg.Content))
+	}
+	return sb.String()
 }

@@ -3,7 +3,7 @@ package tool
 import (
 	"context"
 	"encoding/json"
-	"errors"
+	"fmt"
 	"os/exec"
 	"runtime"
 	"time"
@@ -48,7 +48,7 @@ func (e *ExecCommand) Call(ctx context.Context, args string) (string, error) {
 		return "", err
 	}
 	if arg.Command == "" {
-		return "command is empty", errors.New("command is empty")
+		return "", fmt.Errorf("[exec_command] command is empty")
 	}
 
 	var cmd *exec.Cmd
@@ -60,7 +60,7 @@ func (e *ExecCommand) Call(ctx context.Context, args string) (string, error) {
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return string(output), err
+		return string(output), fmt.Errorf("[exec_command] %w", err)
 	}
 	return string(output), nil
 }

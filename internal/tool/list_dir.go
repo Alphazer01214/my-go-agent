@@ -3,7 +3,6 @@ package tool
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 )
@@ -45,11 +44,11 @@ func (l *ListDir) Call(ctx context.Context, args string) (string, error) {
 		return "", err
 	}
 	if arg.Path == "" {
-		return "path is empty", errors.New("path is empty")
+		return "", fmt.Errorf("[list_dir] path is empty")
 	}
 	entries, err := os.ReadDir(arg.Path)
 	if err != nil {
-		return err.Error(), err
+		return "", fmt.Errorf("[list_dir] %w", err)
 	}
 	result := ""
 	for _, entry := range entries {

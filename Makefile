@@ -3,7 +3,7 @@
 run:
 	go run main.go
 
-run mygo:
+run-mygo:
 	go run cmd/mygoagent/main.go
 
 test:

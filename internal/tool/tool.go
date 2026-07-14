@@ -18,9 +18,13 @@ type Registry struct {
 	tools map[string]Tool // tool name -> tool
 }
 
-func NewRegistry() *Registry {
+func NewRegistry(tools ...Tool) *Registry {
+	ts := make(map[string]Tool)
+	for _, t := range tools {
+		ts[t.Name()] = t
+	}
 	return &Registry{
-		tools: make(map[string]Tool),
+		tools: ts,
 	}
 }
 
@@ -31,7 +35,7 @@ func (r *Registry) Register(tool Tool) {
 func (r *Registry) Get(name string) (Tool, error) {
 	tool, ok := r.tools[name]
 	if !ok {
-		return nil, fmt.Errorf("tool not found: %s", name)
+		return nil, fmt.Errorf("[tool] not found: %s", name)
 	}
 	return tool, nil
 }
@@ -62,4 +66,8 @@ func (r *Registry) ToLLMTool() []llm.Tool {
 		})
 	}
 	return tools
+}
+
+func DefaultRegistry() *Registry {
+	return NewRegistry(NewListDirTool(), NewReadFileTool(1024))
 }

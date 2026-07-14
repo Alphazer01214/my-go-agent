@@ -3,7 +3,7 @@ package tool
 import (
 	"context"
 	"encoding/json"
-	"errors"
+	"fmt"
 	"os"
 )
 
@@ -57,11 +57,11 @@ func (r *ReadFile) Call(ctx context.Context, args string) (string, error) {
 		arg.MaxReadSize = MaxReadSizeConst
 	}
 	if arg.Path == "" {
-		return "path is empty", errors.New("path is empty")
+		return "", fmt.Errorf("[read_file] path is empty")
 	}
 	data, err := os.ReadFile(arg.Path)
 	if err != nil {
-		return err.Error(), err
+		return "", fmt.Errorf("[read_file] %w", err)
 	}
 	res := string(data)
 	if len(res) > arg.MaxReadSize {
