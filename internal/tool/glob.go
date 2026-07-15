@@ -44,7 +44,7 @@ func (g *Glob) Parameters() map[string]interface{} {
 			},
 			"root": map[string]interface{}{
 				"type":        "string",
-				"description": "Root directory to search (default: current dir)",
+				"description": "Relative root directory (default: current dir, e.g. \"internal\")",
 			},
 			"max_results": map[string]interface{}{
 				"type":        "integer",

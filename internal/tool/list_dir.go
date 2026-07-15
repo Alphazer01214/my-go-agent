@@ -31,7 +31,7 @@ func (l *ListDir) Parameters() map[string]interface{} {
 		"properties": map[string]interface{}{
 			"path": map[string]interface{}{
 				"type":        "string",
-				"description": "Directory path",
+				"description": "Relative directory path (e.g. \"internal/agent\" or \".\")",
 			},
 		},
 		"required": []string{"path"},

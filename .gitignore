@@ -4,5 +4,6 @@
 .env
 .memory/
 .claude/
-
+docs/
 *.exe
+logs/

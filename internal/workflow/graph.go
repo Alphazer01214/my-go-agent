@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"my-go-agent/internal/agent"
+	"my-go-agent/internal/memory"
 	"sync"
 	"time"
 )
@@ -230,7 +231,7 @@ func (g *Graph) reachable() map[string]*Node {
 	return reach
 }
 
-func (g *Graph) Run(ctx context.Context, input string) (string, error) {
+func (g *Graph) Run(ctx context.Context, session *memory.Session, input string) (string, error) {
 	g.mu.RLock()
 	if len(g.nodes) == 0 {
 		g.mu.RUnlock()
@@ -262,7 +263,7 @@ func (g *Graph) Run(ctx context.Context, input string) (string, error) {
 		})
 
 		// 执行节点的 agent
-		output, err := node.agent.Run(ctx, currentInput)
+		output, err := node.agent.Run(ctx, session, currentInput)
 		if err != nil {
 			g.fireEvent(GraphEvent{
 				Type:      GraphNodeFailed,

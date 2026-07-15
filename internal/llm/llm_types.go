@@ -24,9 +24,9 @@ type Message struct {
 }
 
 type ChatOptions struct {
-	Temperature    float64 `json:"temperature"`
-	MaxTokens      int     `json:"max_tokens"`
-	ResponseFormat ResponseFormat
+	Temperature    float64        `json:"temperature"`
+	MaxTokens      int            `json:"max_tokens"`
+	ResponseFormat ResponseFormat `json:"response_format,omitempty"`
 }
 
 type ResponseFormat struct {
@@ -70,7 +70,7 @@ type ToolCall struct {
 	Function ToolCallFunction `json:"function"`
 }
 
-// ToolCallFunction 传入的工具函数参数和参数
+// ToolCallFunction 传入的工具函数参数和参数，并作为 memory 的 cache 实现
 type ToolCallFunction struct {
 	Name string `json:"name"`
 	//Arguments map[string]interface{} `json:"arguments"`

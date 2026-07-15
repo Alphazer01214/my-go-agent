@@ -42,7 +42,7 @@ func (s *SearchFile) Parameters() map[string]interface{} {
 		"properties": map[string]interface{}{
 			"path": map[string]interface{}{
 				"type":        "string",
-				"description": "Directory to search in",
+				"description": "Relative directory path to search in (e.g. \"internal/agent\")",
 			},
 			"pattern": map[string]interface{}{
 				"type":        "string",

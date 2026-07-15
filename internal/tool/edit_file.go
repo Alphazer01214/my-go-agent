@@ -35,7 +35,7 @@ func (e *EditFile) Parameters() map[string]interface{} {
 		"properties": map[string]interface{}{
 			"path": map[string]interface{}{
 				"type":        "string",
-				"description": "File path to edit",
+				"description": "Relative file path (e.g. \"internal/agent/agent.go\")",
 			},
 			"old_string": map[string]interface{}{
 				"type":        "string",

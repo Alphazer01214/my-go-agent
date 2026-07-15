@@ -8,7 +8,6 @@ import (
 	"my-go-agent/internal/config"
 	"my-go-agent/internal/llm"
 	"my-go-agent/internal/memory"
-	"my-go-agent/internal/middleware"
 	"my-go-agent/internal/tool"
 	"os"
 	"strings"
@@ -28,59 +27,48 @@ func main() {
 		os.Exit(1)
 	}
 
-	// 创建 LLM 并添加日志中间件
+	// 创建 LLM
 	var cm llm.ChatModel = llm.NewOpenAIChatModel(baseUrl, apiKey, model)
-	cm = middleware.WithChatLog(nil)(cm)
 
 	// 注册工具
 	tools := registerTools()
 
-	// 加载项目上下文
-	projectCtx, err := memory.NewProjectContext(".memory/context.md")
+	// 创建 Project
+	project, err := memory.NewProject(memory.ProjectOpts{
+		Name:        "mygoagent",
+		ContextPath: ".memory/context.md",
+		Compressor:  memory.NewSummaryCompressor(cm, config.MemorySize),
+	})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "[memory] load context: %v\n", err)
+		fmt.Fprintf(os.Stderr, "[project] init: %v\n", err)
 		os.Exit(1)
 	}
 
 	// 创建 agent
 	a := agent.NewToolCallingAgent(cm, tools)
-	a.SetMemory(memory.NewSummaryMemory(cm, config.MemorySize))
 	a.SetMaxStep(config.MaxSteps)
-	a.SetProjectContext(projectCtx)
 
-	// 添加追踪中间件，记录每一步的 thought/action/observation
-	traceHandler := middleware.WithAgentTrace(func(entry middleware.TraceEntry) {
-		step := entry.Data
-		if step.Action != "" {
-			fmt.Printf("\n  [step %d] %s\n", entry.Step, step.Action)
-		}
-	})
-	tracedAgent := traceHandler(a)
+	// 创建 Session
+	session := project.NewSession(a.Name())
 
 	if len(os.Args) > 1 {
-		runSingle(tracedAgent, strings.Join(os.Args[1:], " "))
+		runSingle(a, session, strings.Join(os.Args[1:], " "))
 	} else {
-		runInteractive(tracedAgent)
+		runInteractive(a, session, project)
 	}
 }
 
 func registerTools() *tool.Registry {
 	r := tool.NewRegistry()
 
-	// 文件操作工具
 	r.Register(tool.NewReadFileTool(config.ReadFileSize))
 	r.Register(tool.NewWriteFileTool())
 	r.Register(tool.NewEditFileTool())
-
-	// 目录和文件查找工具
 	r.Register(tool.NewListDirTool())
 	r.Register(tool.NewGlobTool())
 	r.Register(tool.NewSearchFileTool())
-
-	// Shell 命令（作为后备）
 	r.Register(tool.NewExecCommandTool())
 
-	// 网络搜索（可选，需要配置 API）
 	searchAPIKey := os.Getenv("SEARCH_API_KEY")
 	searchBaseURL := os.Getenv("SEARCH_BASE_URL")
 	if searchAPIKey != "" && searchBaseURL != "" {
@@ -90,21 +78,26 @@ func registerTools() *tool.Registry {
 	return r
 }
 
-func runSingle(a agent.Agent, prompt string) {
+func runSingle(a agent.Agent, session *memory.Session, prompt string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
 	defer cancel()
 
-	result, err := a.Run(ctx, prompt)
+	result, err := a.Run(ctx, session, prompt)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "\n[agent] %v\n", err)
 		os.Exit(1)
 	}
 	fmt.Println(result)
+
+	if session.Trace().Len() > 0 {
+		fmt.Println("\n" + session.Trace().Format())
+	}
 }
 
-func runInteractive(a agent.Agent) {
+func runInteractive(a agent.Agent, session *memory.Session, project *memory.Project) {
 	scanner := bufio.NewScanner(os.Stdin)
 	fmt.Println("my-go-agent (type 'exit' to quit)")
+	fmt.Println("Commands: /trace, /trace last, /trace clear, /new, /reset")
 	for {
 		fmt.Print("> ")
 		if !scanner.Scan() {
@@ -118,8 +111,18 @@ func runInteractive(a agent.Agent) {
 			break
 		}
 
+		// 命令处理
+		if strings.HasPrefix(input, "/") {
+			cmd := handleCommand(input, session, project)
+			if cmd == "new_session" {
+				session = project.NewSession(a.Name())
+				fmt.Println("New session created.")
+			}
+			continue
+		}
+
 		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
-		result, err := a.Run(ctx, input)
+		result, err := a.Run(ctx, session, input)
 		cancel()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "\n[agent] %v\n", err)
@@ -128,5 +131,56 @@ func runInteractive(a agent.Agent) {
 			fmt.Println(result)
 		}
 		fmt.Println()
+	}
+}
+
+func handleCommand(input string, session *memory.Session, project *memory.Project) string {
+	parts := strings.Fields(input)
+	cmd := parts[0]
+
+	switch cmd {
+	case "/trace":
+		arg := ""
+		if len(parts) > 1 {
+			arg = parts[1]
+		}
+		handleTraceCommand(session.Trace(), arg)
+	case "/new":
+		return "new_session"
+	case "/reset":
+		session.Reset()
+		fmt.Println("Session reset.")
+	case "/sessions":
+		for _, s := range project.Sessions() {
+			fmt.Printf("  %s  agent=%s  messages=%d  created=%s\n",
+				s.ID(), s.AgentName(), s.MessageCount(), s.CreatedAt().Format("15:04:05"))
+		}
+	default:
+		fmt.Printf("Unknown command: %s\n", cmd)
+	}
+	return ""
+}
+
+func handleTraceCommand(trace *memory.Trace, arg string) {
+	switch arg {
+	case "clear":
+		trace.Clear()
+		fmt.Println("Trace cleared.")
+	case "last":
+		e := trace.Last()
+		if e == nil {
+			fmt.Println("(no trace events)")
+		} else {
+			fmt.Println(trace.FormatEvent(*e))
+		}
+	case "":
+		if trace.Len() == 0 {
+			fmt.Println("(no trace events)")
+		} else {
+			fmt.Println(trace.Format())
+		}
+	default:
+		fmt.Printf("Unknown trace command: %s\n", arg)
+		fmt.Println("Usage: /trace [clear|last]")
 	}
 }

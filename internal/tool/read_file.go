@@ -39,7 +39,7 @@ func (r *ReadFile) Parameters() map[string]interface{} {
 		"properties": map[string]interface{}{
 			"path": map[string]interface{}{
 				"type":        "string",
-				"description": "File path",
+				"description": "Relative file path (e.g. \"internal/agent/agent.go\")",
 			},
 			"max_read_size": map[string]interface{}{
 				"type":        "integer",

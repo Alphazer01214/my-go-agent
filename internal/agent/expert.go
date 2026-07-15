@@ -5,8 +5,23 @@ import (
 	"encoding/json"
 	"fmt"
 	"my-go-agent/internal/llm"
+	"my-go-agent/internal/memory"
 	"my-go-agent/internal/tool"
 )
+
+// context key for session
+type sessionKey struct{}
+
+// WithSession 将 Session 注入 context
+func WithSession(ctx context.Context, s *memory.Session) context.Context {
+	return context.WithValue(ctx, sessionKey{}, s)
+}
+
+// SessionFromContext 从 context 中获取 Session
+func SessionFromContext(ctx context.Context) *memory.Session {
+	s, _ := ctx.Value(sessionKey{}).(*memory.Session)
+	return s
+}
 
 // Expert 包装一个 Agent，提供名称和描述用于路由
 type Expert struct {
@@ -17,11 +32,21 @@ type Expert struct {
 
 // ExpertAsTool 将 Expert 包装为 tool.Tool，使其可被 ToolCallingAgent 调用
 type ExpertAsTool struct {
-	expert *Expert
+	expert    *Expert
+	mode      Mode          // 子 agent 运行模式
+	sharedCtx *SharedContext // 传递给子 agent 的共享上下文
 }
 
 func NewExpertAsTool(expert *Expert) *ExpertAsTool {
 	return &ExpertAsTool{expert: expert}
+}
+
+func NewExpertAsToolWithContext(expert *Expert, mode Mode, sharedCtx *SharedContext) *ExpertAsTool {
+	return &ExpertAsTool{
+		expert:    expert,
+		mode:      mode,
+		sharedCtx: sharedCtx,
+	}
 }
 
 func (e *ExpertAsTool) Name() string        { return e.expert.Name }
@@ -47,7 +72,33 @@ func (e *ExpertAsTool) Call(ctx context.Context, args string) (string, error) {
 	if err := json.Unmarshal([]byte(args), &param); err != nil {
 		return "", fmt.Errorf("[expert] invalid input: %w", err)
 	}
-	return e.expert.Agent.Run(ctx, param.Task)
+
+	session := SessionFromContext(ctx)
+	if session == nil {
+		return "", fmt.Errorf("[expert] no session in context")
+	}
+
+	child := e.createChildAgent()
+	raw, err := child.Run(ctx, session, param.Task)
+	if err != nil {
+		return "", err
+	}
+
+	if e.mode == ModeLightweight {
+		return ExtractAnswer(raw), nil
+	}
+	return formatStructuredToolResult(raw), nil
+}
+
+// createChildAgent 基于 expert 的 agent 创建子 agent
+func (e *ExpertAsTool) createChildAgent() *ToolCallingAgent {
+	base := e.expert.Agent.Base()
+	child := NewToolCallingAgent(base.Model, base.Tools)
+	child.SysPrompt = base.SysPrompt
+	child.MaxStep = base.MaxStep
+	child.Mode = e.mode
+	child.SharedCtx = e.sharedCtx
+	return child
 }
 
 // FindExpert 在列表中按名称查找 Expert

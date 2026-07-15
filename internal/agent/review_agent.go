@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"my-go-agent/internal/llm"
+	"my-go-agent/internal/memory"
 	"my-go-agent/internal/utils"
 	"path/filepath"
 	"strings"
@@ -47,7 +48,7 @@ func NewReviewAgent(model llm.ChatModel) *ReviewAgent {
 	return &ReviewAgent{BaseAgent: base}
 }
 
-func (a *ReviewAgent) Run(ctx context.Context, prompt string) (string, error) {
+func (a *ReviewAgent) Run(ctx context.Context, session *memory.Session, prompt string) (string, error) {
 	filename, code := parseReviewInput(prompt)
 
 	tmpl, err := newTemplate("code-review", codeReviewTmpl)

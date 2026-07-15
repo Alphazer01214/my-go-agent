@@ -44,9 +44,9 @@ func NewPlanAgent(model llm.ChatModel, tools *tool.Registry, experts ...*Expert)
 
 func (a *PlanAgent) Plan() *Plan { return a.plan }
 
-func (a *PlanAgent) Run(ctx context.Context, prompt string) (string, error) {
-	a.steps = nil
+func (a *PlanAgent) Run(ctx context.Context, session *memory.Session, prompt string) (string, error) {
 	a.plan = nil
+	trace := session.Trace()
 
 	plan, err := a.createPlan(ctx, prompt)
 	if err != nil {
@@ -54,22 +54,22 @@ func (a *PlanAgent) Run(ctx context.Context, prompt string) (string, error) {
 	}
 	a.plan = plan
 
-	if a.OnStep != nil {
-		a.OnStep(0, Step{Thought: fmt.Sprintf("Plan: %s (%d tasks)", plan.Goal, len(plan.Todos))})
+	trace.RecordCheckpoint(0, fmt.Sprintf("Plan: %s (%d tasks)", plan.Goal, len(plan.Todos)))
+
+	shared := &SharedContext{
+		Background: fmt.Sprintf("Overall goal: %s", plan.Goal),
 	}
 
 	result := fmt.Sprintf("Goal: %s\n", plan.Goal)
 	for i := range plan.Todos {
 		todo := &plan.Todos[i]
 
-		if a.OnStep != nil {
-			a.OnStep(i+1, Step{Thought: fmt.Sprintf("Task %d/%d: %s", i+1, len(plan.Todos), todo.Description)})
-		}
+		trace.RecordCheckpoint(i+1, fmt.Sprintf("Task %d/%d: %s", i+1, len(plan.Todos), todo.Description))
 
-		executor := a.resolveExecutor(todo)
-		subPrompt := fmt.Sprintf("Overall goal: %s\nYour task: %s\nComplete this task.", plan.Goal, todo.Description)
+		executor := a.resolveExecutor(todo, shared)
+		subPrompt := fmt.Sprintf("Your task: %s\nComplete this task.", todo.Description)
 
-		resp, err := executor.Run(ctx, subPrompt)
+		resp, err := executor.Run(ctx, session, subPrompt)
 		if err != nil {
 			todo.IsSkipped = true
 			todo.Result = err.Error()
@@ -80,25 +80,48 @@ func (a *PlanAgent) Run(ctx context.Context, prompt string) (string, error) {
 		todo.IsDone = true
 		todo.Result = resp
 		result += fmt.Sprintf("\n[Done] %s:\n%s", todo.Description, resp)
+
+		shared.Findings = append(shared.Findings,
+			fmt.Sprintf("Task '%s' completed: %s", todo.Description, summarizeResult(resp)))
 	}
 
 	return result, nil
 }
 
-// resolveExecutor 根据 todo.Expert 字段选择执行者
-func (a *PlanAgent) resolveExecutor(todo *Todo) Agent {
+// resolveExecutor 根据 todo.Expert 字段选择执行者，并注入共享上下文
+func (a *PlanAgent) resolveExecutor(todo *Todo, shared *SharedContext) Agent {
 	if todo.Expert != "" {
 		if expert := FindExpert(a.experts, todo.Expert); expert != nil {
-			return expert.Agent
+			child := a.createChildFromExpert(expert, shared)
+			return child
 		}
 	}
-	// fallback: 普通 ToolCallingAgent
 	executor := NewToolCallingAgent(a.Model, a.Tools)
 	executor.SetSysPrompt(a.SysPrompt)
 	executor.SetMaxStep(a.MaxStep)
-	executor.SetOnStep(a.OnStep)
-	executor.SetMemory(memory.NewSlideWindow(a.MaxStep))
+	executor.SetSharedContext(shared)
 	return executor
+}
+
+// createChildFromExpert 基于 expert 创建子 agent，注入共享上下文
+func (a *PlanAgent) createChildFromExpert(expert *Expert, shared *SharedContext) Agent {
+	base := expert.Agent.Base()
+	child := NewToolCallingAgent(base.Model, base.Tools)
+	child.SysPrompt = base.SysPrompt
+	child.MaxStep = base.MaxStep
+	child.SetSharedContext(shared)
+	return child
+}
+
+// summarizeResult 从子 agent 结果中提取简短摘要
+func summarizeResult(resp string) string {
+	answer := ExtractAnswer(resp)
+	const maxLen = 200
+	runes := []rune(answer)
+	if len(runes) > maxLen {
+		return string(runes[:maxLen]) + "..."
+	}
+	return answer
 }
 
 func (a *PlanAgent) createPlan(ctx context.Context, userPrompt string) (*Plan, error) {
