@@ -34,7 +34,9 @@ func (a *ToolCallingAgent) Run(ctx context.Context, prompt string) (string, erro
 		}
 
 		resp, err := a.Model.StreamChat(ctx, req, func(chunk string) {
-			fmt.Print(chunk)
+			if chunk != "" {
+				fmt.Print(chunk)
+			}
 		})
 		if err != nil {
 			return "", err
@@ -42,13 +44,12 @@ func (a *ToolCallingAgent) Run(ctx context.Context, prompt string) (string, erro
 
 		current := Step{Thought: resp.Content}
 
-		if resp.Content != "" {
-			res += resp.Content
-			a.Memory.Add(ctx, llm.AssistantMessage(resp.Content))
-		}
-
 		// 没有 tool call，说明 agent 认为目标已完成
 		if len(resp.ToolCalls) == 0 {
+			if resp.Content != "" {
+				res += resp.Content
+				a.Memory.Add(ctx, llm.AssistantMessage(resp.Content))
+			}
 			a.steps = append(a.steps, current)
 			if a.OnStep != nil {
 				a.OnStep(step, current)
@@ -56,6 +57,10 @@ func (a *ToolCallingAgent) Run(ctx context.Context, prompt string) (string, erro
 			return res, nil
 		}
 
+		// 有 tool call：content + tool_calls 合并为一条消息，避免重复存储 content
+		if resp.Content != "" {
+			res += resp.Content
+		}
 		a.Memory.Add(ctx, llm.AssistantMessageWithToolCall(resp.Content, resp.ToolCalls))
 		for _, call := range resp.ToolCalls {
 			current.Action = fmt.Sprintf("%s(%s)", call.Function.Name, call.Function.Arguments)

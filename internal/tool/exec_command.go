@@ -4,12 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"my-go-agent/internal/config"
 	"os/exec"
 	"runtime"
-	"time"
 )
 
-const defaultTimeout = 60 * time.Second
+const defaultTimeout = config.ToolExecTimeout
 
 type ExecCommand struct{}
 
@@ -26,7 +26,7 @@ func (e *ExecCommand) Name() string {
 }
 
 func (e *ExecCommand) Description() string {
-	return "execute a shell command"
+	return "Execute shell command. ONLY use when no other tool works. For files: read_file/write_file/edit_file. For search: search_file/glob. For dirs: list_dir."
 }
 
 func (e *ExecCommand) Parameters() map[string]interface{} {
@@ -35,7 +35,7 @@ func (e *ExecCommand) Parameters() map[string]interface{} {
 		"properties": map[string]interface{}{
 			"command": map[string]interface{}{
 				"type":        "string",
-				"description": "shell command to execute, DO NOT USE THIS TOOL IF OTHER TOOL CAN DO IT",
+				"description": "Shell command to execute",
 			},
 		},
 		"required": []string{"command"},

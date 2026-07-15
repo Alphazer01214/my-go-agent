@@ -22,7 +22,7 @@ func (l *ListDir) Name() string {
 }
 
 func (l *ListDir) Description() string {
-	return "list directory contents"
+	return "List directory contents. Returns [DIR] for folders, [FILE] with size for files."
 }
 
 func (l *ListDir) Parameters() map[string]interface{} {
@@ -31,7 +31,7 @@ func (l *ListDir) Parameters() map[string]interface{} {
 		"properties": map[string]interface{}{
 			"path": map[string]interface{}{
 				"type":        "string",
-				"description": "relative path to directory",
+				"description": "Directory path",
 			},
 		},
 		"required": []string{"path"},

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"my-go-agent/internal/config"
 	"os"
 )
 
@@ -23,12 +24,13 @@ func NewReadFileTool(maxReadSize int) *ReadFile {
 		MaxMaxReadSize: maxReadSize,
 	}
 }
+
 func (r *ReadFile) Name() string {
 	return "read_file"
 }
 
 func (r *ReadFile) Description() string {
-	return "read file"
+	return "Read file content. Always use max_read_size to limit output and save tokens."
 }
 
 func (r *ReadFile) Parameters() map[string]interface{} {
@@ -37,11 +39,11 @@ func (r *ReadFile) Parameters() map[string]interface{} {
 		"properties": map[string]interface{}{
 			"path": map[string]interface{}{
 				"type":        "string",
-				"description": "relative path to file",
+				"description": "File path",
 			},
 			"max_read_size": map[string]interface{}{
 				"type":        "integer",
-				"description": "max read size",
+				"description": "Max bytes to read (default 4096, max 1MB)",
 			},
 		},
 		"required": []string{"path"},
@@ -53,11 +55,15 @@ func (r *ReadFile) Call(ctx context.Context, args string) (string, error) {
 	if err := json.Unmarshal([]byte(args), &arg); err != nil {
 		return "", err
 	}
-	if arg.MaxReadSize > MaxReadSizeConst {
-		arg.MaxReadSize = MaxReadSizeConst
-	}
 	if arg.Path == "" {
 		return "", fmt.Errorf("[read_file] path is empty")
+	}
+	// 默认限制 4KB，避免 token 浪费
+	if arg.MaxReadSize <= 0 {
+		arg.MaxReadSize = config.ReadFileSize
+	}
+	if arg.MaxReadSize > MaxReadSizeConst {
+		arg.MaxReadSize = MaxReadSizeConst
 	}
 	data, err := os.ReadFile(arg.Path)
 	if err != nil {

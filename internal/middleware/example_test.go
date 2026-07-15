@@ -8,9 +8,8 @@ import (
 	"my-go-agent/internal/tool"
 )
 
-// 示例：ChatModel 中间件使用
+// 示例：ChatModel 中间件
 func Example_chatModel() {
-	// 创建原始 model
 	model := llm.NewOpenAIChatModel("http://localhost:8080", "key", "gpt-4")
 
 	// 添加日志
@@ -25,14 +24,11 @@ func Example_chatModel() {
 		middleware.WithChatTrace(nil),
 	)
 	_ = composed(model)
-
-	// 使用 tracedModel...
 	_ = tracedModel
 }
 
-// 示例：Agent 中间件使用
+// 示例：Agent 中间件
 func Example_agent() {
-	// 创建原始 agent
 	model := llm.NewOpenAIChatModel("http://localhost:8080", "key", "gpt-4")
 	registry := tool.NewRegistry()
 	baseAgent := agent.NewToolCallingAgent(model, registry)
@@ -40,7 +36,7 @@ func Example_agent() {
 	// 添加日志
 	loggedAgent := middleware.WithAgentLog(nil)(baseAgent)
 
-	// 添加追踪
+	// 添加追踪（记录每一步的 thought/action/observation）
 	tracedAgent := middleware.WithAgentTrace(nil)(loggedAgent)
 
 	// 或者组合多个中间件
@@ -49,25 +45,27 @@ func Example_agent() {
 		middleware.WithAgentTrace(nil),
 	)
 	_ = composed(baseAgent)
-
-	// 使用 tracedAgent...
 	_ = tracedAgent
 }
 
 // 示例：自定义追踪处理器
 func Example_customTraceHandler() {
-	// 收集所有追踪条目
-	var entries []middleware.AgentTraceEntry
+	// 自定义 agent 追踪处理器
+	agentHandler := middleware.WithAgentTrace(func(entry middleware.TraceEntry) {
+		fmt.Printf("Agent %s step %d: %s\n", entry.AgentName, entry.Step, entry.Data.Action)
+	})
 
-	handler := middleware.WithAgentTrace(func(entry middleware.AgentTraceEntry) {
-		entries = append(entries, entry)
-		// 可以发送到 Jaeger、Zipkin 等追踪系统
+	// 自定义 LLM 追踪处理器
+	llmHandler := middleware.WithChatTrace(func(entry middleware.ChatTraceEntry) {
+		fmt.Printf("LLM %s: %v\n", entry.Method, entry.Duration)
 	})
 
 	model := llm.NewOpenAIChatModel("http://localhost:8080", "key", "gpt-4")
-	registry := tool.NewRegistry()
-	baseAgent := agent.NewToolCallingAgent(model, registry)
+	loggedModel := llmHandler(model)
 
-	tracedAgent := handler(baseAgent)
+	registry := tool.NewRegistry()
+	baseAgent := agent.NewToolCallingAgent(loggedModel, registry)
+	tracedAgent := agentHandler(baseAgent)
+
 	fmt.Println(tracedAgent.Name())
 }

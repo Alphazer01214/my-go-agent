@@ -81,7 +81,7 @@ type ChatModelWithTrace struct {
 	handler ChatTraceHandler
 }
 
-// WithChatTrace 创建 ChatModel 追踪中间件，handler 为 nil 时使用默认处理器
+// WithChatTrace 创建 ChatModel 追踪中间件，记录请求/响应详情
 func WithChatTrace(handler ChatTraceHandler) ChatModelMiddleware {
 	if handler == nil {
 		handler = DefaultChatTraceHandler
@@ -108,15 +108,7 @@ func (c *ChatModelWithTrace) Chat(ctx context.Context, req *llm.ChatRequest) (*l
 
 func (c *ChatModelWithTrace) StreamChat(ctx context.Context, req *llm.ChatRequest, callback func(string)) (*llm.ChatResponse, error) {
 	start := time.Now()
-
-	// 包装 callback 以追踪流式输出
-	var chunks []string
-	wrappedCallback := func(chunk string) {
-		chunks = append(chunks, chunk)
-		callback(chunk)
-	}
-
-	resp, err := c.model.StreamChat(ctx, req, wrappedCallback)
+	resp, err := c.model.StreamChat(ctx, req, callback)
 
 	c.handler(ChatTraceEntry{
 		Timestamp: start,

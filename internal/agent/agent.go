@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"my-go-agent/internal/config"
 	"my-go-agent/internal/llm"
 	"my-go-agent/internal/memory"
 	"my-go-agent/internal/prompts"
@@ -43,9 +44,9 @@ func NewBaseAgent(name string, model llm.ChatModel, tools *tool.Registry) *BaseA
 		name:      name,
 		Model:     model,
 		Tools:     tools,
-		Memory:    memory.NewSlideWindow(20),
+		Memory:    memory.NewSlideWindow(config.MemorySize),
 		SysPrompt: prompts.DefaultSystemPrompt,
-		MaxStep:   50,
+		MaxStep:   config.MaxSteps,
 	}
 }
 

@@ -56,41 +56,27 @@ func (a *AgentWithLog) Run(ctx context.Context, prompt string) (string, error) {
 
 // ==================== Trace ====================
 
-// AgentTraceEvent 追踪事件类型
-type AgentTraceEvent string
-
-const (
-	AgentTraceStart AgentTraceEvent = "start"
-	AgentTraceStep  AgentTraceEvent = "step"
-	AgentTraceEnd   AgentTraceEvent = "end"
-	AgentTraceError AgentTraceEvent = "error"
-)
-
-// AgentTraceEntry Agent 追踪记录
-type AgentTraceEntry struct {
+// TraceEntry 追踪记录
+type TraceEntry struct {
 	Timestamp time.Time
-	Event     AgentTraceEvent
 	AgentName string
 	Step      int
-	TotalSteps int
 	Data      agent.Step
-	Duration  time.Duration
-	Error     error
 }
 
-// AgentTraceHandler 处理 Agent 追踪事件
-type AgentTraceHandler func(entry AgentTraceEntry)
+// TraceHandler 处理追踪事件
+type TraceHandler func(entry TraceEntry)
 
-// AgentWithTrace 带追踪的 Agent 包装器
+// AgentWithTrace 带追踪的 Agent 包装器，忠实记录每一步的 thought/action/observation
 type AgentWithTrace struct {
 	agent   agent.Agent
-	handler AgentTraceHandler
+	handler TraceHandler
 }
 
-// WithAgentTrace 创建 Agent 追踪中间件，handler 为 nil 时使用默认处理器
-func WithAgentTrace(handler AgentTraceHandler) AgentMiddleware {
+// WithAgentTrace 创建 Agent 追踪中间件，记录每一步的执行详情
+func WithAgentTrace(handler TraceHandler) AgentMiddleware {
 	if handler == nil {
-		handler = DefaultAgentTraceHandler
+		handler = DefaultTraceHandler
 	}
 	return func(a agent.Agent) agent.Agent {
 		return &AgentWithTrace{agent: a, handler: handler}
@@ -106,25 +92,14 @@ func (a *AgentWithTrace) Steps() []agent.Step {
 }
 
 func (a *AgentWithTrace) Run(ctx context.Context, prompt string) (string, error) {
-	start := time.Now()
-
-	// 追踪开始
-	a.handler(AgentTraceEntry{
-		Timestamp: start,
-		Event:     AgentTraceStart,
-		AgentName: a.agent.Name(),
-		Data:      agent.Step{Thought: prompt},
-	})
-
-	// 包装 OnStep 回调（如果 agent 支持）
+	// 包装 OnStep 回调，记录每一步
 	type stepSetter interface {
 		SetOnStep(agent.StepCallback)
 	}
 	if setter, ok := a.agent.(stepSetter); ok {
 		setter.SetOnStep(func(step int, data agent.Step) {
-			a.handler(AgentTraceEntry{
+			a.handler(TraceEntry{
 				Timestamp: time.Now(),
-				Event:     AgentTraceStep,
 				AgentName: a.agent.Name(),
 				Step:      step,
 				Data:      data,
@@ -132,55 +107,7 @@ func (a *AgentWithTrace) Run(ctx context.Context, prompt string) (string, error)
 		})
 	}
 
-	// 执行 agent
-	result, err := a.agent.Run(ctx, prompt)
-	duration := time.Since(start)
-	steps := a.agent.Steps()
-
-	// 追踪结束
-	if err != nil {
-		a.handler(AgentTraceEntry{
-			Timestamp:  time.Now(),
-			Event:      AgentTraceError,
-			AgentName:  a.agent.Name(),
-			TotalSteps: len(steps),
-			Duration:   duration,
-			Error:      err,
-		})
-	} else {
-		a.handler(AgentTraceEntry{
-			Timestamp:  time.Now(),
-			Event:      AgentTraceEnd,
-			AgentName:  a.agent.Name(),
-			TotalSteps: len(steps),
-			Duration:   duration,
-		})
-	}
-
-	return result, err
-}
-
-// DefaultAgentTraceHandler 默认的 Agent 追踪处理器
-func DefaultAgentTraceHandler(entry AgentTraceEntry) {
-	ts := entry.Timestamp.Format("15:04:05.000")
-
-	switch entry.Event {
-	case AgentTraceStart:
-		fmt.Printf("[%s] ▶ [%s] start\n", ts, entry.AgentName)
-	case AgentTraceStep:
-		step := entry.Data
-		action := step.Action
-		if action == "" {
-			action = "(thinking)"
-		}
-		fmt.Printf("[%s] → [%s] step %d | %s\n", ts, entry.AgentName, entry.Step, action)
-	case AgentTraceEnd:
-		fmt.Printf("[%s] ✓ [%s] done | duration=%v steps=%d\n",
-			ts, entry.AgentName, entry.Duration, entry.TotalSteps)
-	case AgentTraceError:
-		fmt.Printf("[%s] ✗ [%s] error | duration=%v steps=%d err=%v\n",
-			ts, entry.AgentName, entry.Duration, entry.TotalSteps, entry.Error)
-	}
+	return a.agent.Run(ctx, prompt)
 }
 
 // ComposeAgentMiddlewares 组合多个 Agent 中间件，从左到右执行
@@ -190,5 +117,34 @@ func ComposeAgentMiddlewares(middlewares ...AgentMiddleware) AgentMiddleware {
 			a = middlewares[i](a)
 		}
 		return a
+	}
+}
+
+// truncate 截断字符串到指定长度
+func truncate(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
+}
+
+// DefaultTraceHandler 默认的追踪处理器
+func DefaultTraceHandler(entry TraceEntry) {
+	ts := entry.Timestamp.Format("15:04:05.000")
+	step := entry.Data
+
+	// 输出 thought
+	if step.Thought != "" {
+		fmt.Printf("[%s] [%s] step %d thought: %s\n", ts, entry.AgentName, entry.Step, step.Thought)
+	}
+
+	// 输出 action
+	if step.Action != "" {
+		fmt.Printf("[%s] [%s] step %d action: %s\n", ts, entry.AgentName, entry.Step, step.Action)
+	}
+
+	// 输出 observation
+	if step.Observation != "" {
+		fmt.Printf("[%s] [%s] step %d observation: %s\n", ts, entry.AgentName, entry.Step, truncate(step.Observation, 100))
 	}
 }
