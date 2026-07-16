@@ -13,12 +13,14 @@ import (
 type EventType string
 
 const (
-	EventUser       EventType = "user"       // 用户输入
-	EventThought    EventType = "thought"    // LLM 推理/中间响应
-	EventToolCall   EventType = "tool_call"  // 工具调用
-	EventResponse   EventType = "response"   // 最终响应（agent 完成）
-	EventCheckpoint EventType = "checkpoint" // 手动检查点
-	EventRestore    EventType = "restore"    // 检查点恢复（不可逆）
+	EventUser         EventType = "user"         // 用户输入
+	EventThought      EventType = "thought"      // LLM 推理/中间响应
+	EventToolCall     EventType = "tool_call"    // 工具调用
+	EventResponse     EventType = "response"     // 最终响应（agent 完成）
+	EventCheckpoint   EventType = "checkpoint"   // 手动检查点
+	EventRestore      EventType = "restore"      // 检查点恢复（不可逆）
+	EventSandboxDeny  EventType = "sandbox_deny" // 沙箱拦截（未执行）
+	EventPathFix      EventType = "path_fix"     // 路径自动修正
 )
 
 // FileOp 文件操作类型
@@ -198,6 +200,30 @@ func (t *Trace) RecordCheckpoint(step int, name string) {
 		Type:     EventCheckpoint,
 		Response: name,
 		Reverse:  &ReverseDiff{},
+	})
+}
+
+// RecordSandboxDeny 记录沙箱拦截事件（未执行，无状态变更，可恢复）
+func (t *Trace) RecordSandboxDeny(step int, toolName, reason string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.appendEvent(Event{
+		Step:     step,
+		Type:     EventSandboxDeny,
+		Response: fmt.Sprintf("%s: %s", toolName, reason),
+		Reverse:  &ReverseDiff{}, // 未执行，无状态变更，可恢复
+	})
+}
+
+// RecordPathFix 记录路径修正事件（信息性，不影响回滚）
+func (t *Trace) RecordPathFix(step int, original, fixed string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.appendEvent(Event{
+		Step:     step,
+		Type:     EventPathFix,
+		Response: fmt.Sprintf("%s → %s", original, fixed),
+		Reverse:  &ReverseDiff{}, // 信息性事件，可逆（无实际操作）
 	})
 }
 
@@ -406,6 +432,14 @@ func formatEventBlock(e Event) string {
 		sb.WriteString(fmt.Sprintf("\n [%s] %s  step %d  restore ✗ (irreversible)\n", e.ID, ts, e.Step))
 		sb.WriteString(fmt.Sprintf("  %s\n", truncateStr(e.Response, 100)))
 
+	case EventSandboxDeny:
+		sb.WriteString(fmt.Sprintf("\n [%s] %s  step %d  sandbox ✗\n", e.ID, ts, e.Step))
+		sb.WriteString(fmt.Sprintf("  %s\n", truncateStr(e.Response, 200)))
+
+	case EventPathFix:
+		sb.WriteString(fmt.Sprintf("\n [%s] %s  step %d  path_fix\n", e.ID, ts, e.Step))
+		sb.WriteString(fmt.Sprintf("  %s\n", truncateStr(e.Response, 200)))
+
 	default:
 		sb.WriteString(fmt.Sprintf("\n [%s] %s  step %d  %s\n", e.ID, ts, e.Step, e.Type))
 	}
@@ -448,6 +482,12 @@ func summarizeEvent(e Event) string {
 		return truncateStr(e.Response, 60)
 
 	case EventRestore:
+		return truncateStr(e.Response, 80)
+
+	case EventSandboxDeny:
+		return truncateStr(e.Response, 100)
+
+	case EventPathFix:
 		return truncateStr(e.Response, 80)
 
 	default:

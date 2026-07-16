@@ -9,18 +9,14 @@ import (
 	"my-go-agent/internal/tool"
 )
 
-// context key for session
-type sessionKey struct{}
-
-// WithSession 将 Session 注入 context
+// WithSession 将 Session 注入 context（代理到 memory 包）
 func WithSession(ctx context.Context, s *memory.Session) context.Context {
-	return context.WithValue(ctx, sessionKey{}, s)
+	return memory.WithSession(ctx, s)
 }
 
-// SessionFromContext 从 context 中获取 Session
+// SessionFromContext 从 context 中获取 Session（代理到 memory 包）
 func SessionFromContext(ctx context.Context) *memory.Session {
-	s, _ := ctx.Value(sessionKey{}).(*memory.Session)
-	return s
+	return memory.SessionFromContext(ctx)
 }
 
 // Expert 包装一个 Agent，提供名称和描述用于路由

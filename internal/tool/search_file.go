@@ -69,6 +69,7 @@ func (s *SearchFile) Call(ctx context.Context, args string) (string, error) {
 	if arg.Path == "" {
 		return "", fmt.Errorf("[search_file] path is empty")
 	}
+	arg.Path = NormalizePath(arg.Path)
 	if arg.Pattern == "" {
 		return "", fmt.Errorf("[search_file] pattern is empty")
 	}

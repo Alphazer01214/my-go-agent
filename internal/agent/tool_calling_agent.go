@@ -31,6 +31,47 @@ func normalizeJSON(s string) string {
 	return s
 }
 
+// extractPath 从工具参数 JSON 中提取 path 字段
+func extractPath(args string) string {
+	var arg struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal([]byte(args), &arg); err != nil {
+		return ""
+	}
+	return arg.Path
+}
+
+// normalizePath 规范化路径（与 tool.NormalizePath 逻辑一致）
+func normalizePath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return path
+	}
+	path = strings.ReplaceAll(path, "\\", "/")
+	if !strings.HasPrefix(path, "/") {
+		return path
+	}
+	// 绝对路径 → 尝试提取相对部分
+	cwd, err := os.Getwd()
+	if err != nil {
+		return path
+	}
+	cwdNorm := strings.ReplaceAll(cwd, "\\", "/")
+	pathNorm := strings.ReplaceAll(path, "\\", "/")
+	if strings.HasPrefix(pathNorm, cwdNorm+"/") {
+		return strings.TrimPrefix(pathNorm, cwdNorm+"/")
+	}
+	// 查找常见项目目录
+	parts := strings.Split(pathNorm, "/")
+	for i, part := range parts {
+		if part == "internal" || part == "cmd" || part == "pkg" || part == "src" {
+			return strings.Join(parts[i:], "/")
+		}
+	}
+	return path
+}
+
 // truncateArgs 截断参数显示，将换行替换为空格
 func truncateArgs(s string, maxLen int) string {
 	s = strings.ReplaceAll(s, "\n", " ")
@@ -56,6 +97,12 @@ func (a *ToolCallingAgent) Run(ctx context.Context, session *memory.Session, pro
 
 	trace := session.Trace()
 	trace.RecordUser(0, prompt)
+	// 自动创建检查点，便于回滚
+	cpName := prompt
+	if len(cpName) > 60 {
+		cpName = cpName[:60] + "..."
+	}
+	trace.RecordCheckpoint(0, cpName)
 	res := ""
 	calledTools := make(map[string]int)
 
@@ -108,7 +155,8 @@ func (a *ToolCallingAgent) Run(ctx context.Context, session *memory.Session, pro
 		}
 		assistantMsg := llm.AssistantMessageWithToolCall(llmOutput, resp.ToolCalls)
 		session.AddMessage(assistantMsg)
-		trace.RecordThought(step, assistantMsg, llmOutput)
+		// RecordThought 只记录展示内容，不记录 MsgsAdded（由 RecordToolCall 统一记录）
+		trace.RecordThought(step, llm.Message{}, llmOutput)
 
 		var duplicateWarnings []string
 		var toolMsgs []llm.Message
@@ -128,6 +176,15 @@ func (a *ToolCallingAgent) Run(ctx context.Context, session *memory.Session, pro
 			// 工具调用可视化提示
 			fmt.Printf("  ⏺ %s(%s)\n", call.Function.Name, truncateArgs(call.Function.Arguments, 80))
 
+			// 检测路径修正
+			originalPath := extractPath(call.Function.Arguments)
+			if originalPath != "" {
+				normalizedPath := normalizePath(originalPath)
+				if normalizedPath != originalPath {
+					trace.RecordPathFix(step, originalPath, normalizedPath)
+				}
+			}
+
 			// 在执行前检测文件变更（捕获 before 状态）
 			fileChanges := detectFileChanges(call.Function.Name, call.Function.Arguments)
 			allFileChanges = append(allFileChanges, fileChanges...)
@@ -135,6 +192,13 @@ func (a *ToolCallingAgent) Run(ctx context.Context, session *memory.Session, pro
 			// 注入 session 到 context，供 ExpertAsTool 等需要 session 的工具使用
 			toolCtx := WithSession(ctx, session)
 			result := a.Tools.Execute(toolCtx, call.Function.Name, call.Function.Arguments)
+
+			// 检测沙箱拦截
+			if strings.HasPrefix(result, "[SANDBOX]") {
+				reason := strings.TrimPrefix(result, "[SANDBOX] ")
+				trace.RecordSandboxDeny(step, call.Function.Name, reason)
+			}
+
 			toolMsg := llm.ToolMessage(call.ID, result)
 			session.AddMessage(toolMsg)
 			toolMsgs = append(toolMsgs, toolMsg)
@@ -146,7 +210,10 @@ func (a *ToolCallingAgent) Run(ctx context.Context, session *memory.Session, pro
 			})
 		}
 
-		trace.RecordToolCall(step, toolMsgs, toolRecords, allFileChanges)
+		// MsgsAdded = assistant(with tool_calls) + 所有 tool results
+		// 确保回滚时删除完整的消息组，不留下孤立的 assistant 消息
+		allMsgs := append([]llm.Message{assistantMsg}, toolMsgs...)
+		trace.RecordToolCall(step, allMsgs, toolRecords, allFileChanges)
 
 		if len(duplicateWarnings) > 0 {
 			warningMsg := strings.Join(duplicateWarnings, "\n")

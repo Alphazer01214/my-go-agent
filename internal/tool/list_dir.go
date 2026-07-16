@@ -46,6 +46,7 @@ func (l *ListDir) Call(ctx context.Context, args string) (string, error) {
 	if arg.Path == "" {
 		return "", fmt.Errorf("[list_dir] path is empty")
 	}
+	arg.Path = NormalizePath(arg.Path)
 	entries, err := os.ReadDir(arg.Path)
 	if err != nil {
 		return "", fmt.Errorf("[list_dir] %w", err)

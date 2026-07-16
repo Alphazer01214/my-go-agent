@@ -58,6 +58,7 @@ func (r *ReadFile) Call(ctx context.Context, args string) (string, error) {
 	if arg.Path == "" {
 		return "", fmt.Errorf("[read_file] path is empty")
 	}
+	arg.Path = NormalizePath(arg.Path)
 	// 默认限制 4KB，避免 token 浪费
 	if arg.MaxReadSize <= 0 {
 		arg.MaxReadSize = config.ReadFileSize

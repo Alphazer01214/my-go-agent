@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"my-go-agent/internal/llm"
+	"my-go-agent/internal/sandbox"
 	"sync"
 )
 
@@ -17,9 +18,26 @@ type Tool interface {
 }
 
 type Registry struct {
-	mu    sync.RWMutex
-	tools map[string]Tool // tool name -> tool
-	cache map[string]string
+	mu      sync.RWMutex
+	tools   map[string]Tool // tool name -> tool
+	cache   map[string]string
+	sandbox *sandbox.Sandbox
+}
+
+// SetSandbox 设置沙箱（用于拦截高危操作）
+func (r *Registry) SetSandbox(s *sandbox.Sandbox) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.sandbox = s
+}
+
+// ResetSandbox 重置沙箱批量放行状态（每次 Run() 开始时调用）
+func (r *Registry) ResetSandbox() {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.sandbox != nil {
+		r.sandbox.Reset()
+	}
 }
 
 // 缓存白名单：只缓存无副作用的只读工具
@@ -69,6 +87,14 @@ func (r *Registry) Get(name string) (Tool, error) {
 }
 
 func (r *Registry) Execute(ctx context.Context, name string, args string) string {
+	// 沙箱检查
+	if r.sandbox != nil {
+		allowed, reason := r.sandbox.Check(name, args)
+		if !allowed {
+			return fmt.Sprintf("[SANDBOX] %s", reason)
+		}
+	}
+
 	// 写操作清除缓存（数据可能变化）
 	if name == "write_file" || name == "edit_file" || name == "exec_command" {
 		r.mu.Lock()

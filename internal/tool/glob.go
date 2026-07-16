@@ -65,6 +65,8 @@ func (g *Glob) Call(ctx context.Context, args string) (string, error) {
 	}
 	if arg.Root == "" {
 		arg.Root = "."
+	} else {
+		arg.Root = NormalizePath(arg.Root)
 	}
 	if arg.MaxResults <= 0 {
 		arg.MaxResults = g.maxResults

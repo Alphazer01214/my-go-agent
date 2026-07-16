@@ -62,6 +62,7 @@ func (e *EditFile) Call(ctx context.Context, args string) (string, error) {
 	if arg.Path == "" {
 		return "", fmt.Errorf("[edit_file] path is empty")
 	}
+	arg.Path = NormalizePath(arg.Path)
 	if arg.OldString == "" {
 		return "", fmt.Errorf("[edit_file] old_string is empty")
 	}

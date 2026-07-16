@@ -33,11 +33,11 @@ func (c *WindowCompressor) Compress(_ context.Context, messages []llm.Message) (
 
 // SummaryCompressor 摘要压缩：超出阈值时用 LLM 总结旧消息
 type SummaryCompressor struct {
-	mu             sync.Mutex
-	threshold      int
-	summarizer     llm.ChatModel
-	summary        string // 累积摘要
-	keepRecentTools int   // 保留最近的工具结果数量
+	mu              sync.Mutex
+	threshold       int
+	summarizer      llm.ChatModel
+	summary         string // 累积摘要
+	keepRecentTools int    // 保留最近的工具结果数量
 }
 
 func NewSummaryCompressor(summarizer llm.ChatModel, threshold int) *SummaryCompressor {
@@ -48,7 +48,6 @@ func NewSummaryCompressor(summarizer llm.ChatModel, threshold int) *SummaryCompr
 	}
 }
 
-// Summary 返回当前累积摘要
 func (c *SummaryCompressor) Summary() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()

@@ -57,6 +57,7 @@ func (w *WriteFile) Call(ctx context.Context, args string) (string, error) {
 	if arg.Path == "" {
 		return "", fmt.Errorf("[write_file] path is empty")
 	}
+	arg.Path = NormalizePath(arg.Path)
 
 	// 确保目录存在
 	dir := filepath.Dir(arg.Path)

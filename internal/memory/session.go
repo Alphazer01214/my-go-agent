@@ -8,7 +8,21 @@ import (
 	"time"
 )
 
-// Session 管理一次对话的完整状态：消息历史、执行轨迹、压缩策略
+// context key for session
+type sessionKey struct{}
+
+// WithSession 将 Session 注入 context
+func WithSession(ctx context.Context, s *Session) context.Context {
+	return context.WithValue(ctx, sessionKey{}, s)
+}
+
+// SessionFromContext 从 context 中获取 Session
+func SessionFromContext(ctx context.Context) *Session {
+	s, _ := ctx.Value(sessionKey{}).(*Session)
+	return s
+}
+
+// Session 管理一次对话的完整状态：消息历史、执行轨迹、压缩策略、待办列表
 type Session struct {
 	mu         sync.RWMutex
 	id         string
@@ -17,6 +31,7 @@ type Session struct {
 	messages   []llm.Message
 	systemSet  bool      // system message 是否已添加
 	trace      *Trace
+	todoList   *TodoList
 	compressor Compressor
 	project    *Project
 	metadata   map[string]string
@@ -40,6 +55,7 @@ func NewSession(opts SessionOpts) *Session {
 		agentName:  agentName,
 		createdAt:  time.Now(),
 		trace:      NewTrace(agentName),
+		todoList:   NewTodoList(),
 		compressor: opts.Compressor,
 		project:    opts.Project,
 		metadata:   make(map[string]string),
@@ -86,6 +102,9 @@ func (s *Session) ProjectContext() *ProjectContext {
 // Trace 返回执行轨迹
 func (s *Session) Trace() *Trace { return s.trace }
 
+// Todo 返回待办列表
+func (s *Session) Todo() *TodoList { return s.todoList }
+
 // AddMessage 向 session 添加一条消息
 func (s *Session) AddMessage(msg llm.Message) {
 	s.mu.Lock()
@@ -126,6 +145,60 @@ func (s *Session) MessageCount() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return len(s.messages)
+}
+
+// RemoveLastMessages 从末尾移除消息（用于回滚）
+// 自动保证消息组完整性：不会留下孤立的 assistant(tool_calls) 或 tool 消息
+func (s *Session) RemoveLastMessages(n int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if n <= 0 || len(s.messages) == 0 {
+		return
+	}
+	if n >= len(s.messages) {
+		s.messages = nil
+		return
+	}
+
+	cut := len(s.messages) - n
+
+	// 确保不会切断 tool-call 消息组
+	// 如果 cut 位置后面有 tool 消息，需要找到它们的父 assistant 消息
+	for cut < len(s.messages) && s.messages[cut].Role == llm.RoleTool {
+		// 找到这个 tool 消息的父 assistant 消息
+		callID := s.messages[cut].ToolCallID
+		for j := cut - 1; j >= 0; j-- {
+			if s.messages[j].Role == llm.RoleAssistant && len(s.messages[j].ToolCalls) > 0 {
+				for _, tc := range s.messages[j].ToolCalls {
+					if tc.ID == callID {
+						// 找到父消息，cut 移到它前面
+						cut = j
+						break
+					}
+				}
+				break
+			}
+		}
+		break // 只处理第一个孤立的 tool 消息
+	}
+
+	// 如果 cut 位置是 assistant(with tool_calls)，需要把它和所有 tool 子消息一起删除
+	if cut < len(s.messages) && s.messages[cut].Role == llm.RoleAssistant &&
+		len(s.messages[cut].ToolCalls) > 0 {
+		// 收集这个 assistant 的所有 tool_call_id
+		callIDs := make(map[string]bool)
+		for _, tc := range s.messages[cut].ToolCalls {
+			callIDs[tc.ID] = true
+		}
+		cut++
+		// 跳过所有属于这个 assistant 的 tool 消息
+		for cut < len(s.messages) && s.messages[cut].Role == llm.RoleTool &&
+			callIDs[s.messages[cut].ToolCallID] {
+			cut++
+		}
+	}
+
+	s.messages = s.messages[:cut]
 }
 
 // SystemSet 返回 system message 是否已设置
