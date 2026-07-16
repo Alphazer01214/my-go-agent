@@ -20,7 +20,7 @@ const (
 // LLM 配置常量
 const (
 	DefaultLLMTimeout     = 66 * time.Second // LLM 请求超时
-	DefaultLLMMaxRetries  = 6                // LLM 最大重试次数
+	DefaultLLMMaxRetries  = 7                // LLM 最大重试次数
 	DefaultLLMRetryBaseMs = 100              // 重试基础延迟（毫秒）
 	DefaultLLMRetryMaxSec = 10               // 重试最大延迟（秒）
 )
