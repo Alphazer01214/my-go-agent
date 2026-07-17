@@ -95,7 +95,7 @@ func (s *SearchFile) Call(ctx context.Context, args string) (string, error) {
 			}
 		}
 		// 跳过二进制文件
-		if info.Size() > 1024*1024 {
+		if info.Size() > config.ToolSearchBinaryLimit {
 			return nil
 		}
 

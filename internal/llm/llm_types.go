@@ -2,6 +2,7 @@ package llm
 
 import (
 	"fmt"
+	"my-go-agent/internal/utils"
 	"strings"
 )
 
@@ -13,6 +14,21 @@ const (
 	RoleAssistant Role = "assistant"
 	RoleTool      Role = "tool"
 )
+
+type ModelEffort string
+
+const (
+	ModelEffortLow    ModelEffort = "low"
+	ModelEffortMedium ModelEffort = "medium"
+	ModelEffortHigh   ModelEffort = "high"
+)
+
+type ChatModelOption struct {
+	Model   string
+	ApiKey  string
+	BaseUrl string
+	Effort  ModelEffort
+}
 
 type Message struct {
 	ID       string `json:"id,omitempty"`        // 消息唯一 ID（用户消息生成，assistant/tool 继承）
@@ -85,6 +101,7 @@ type ToolCallFunction struct {
 
 func SystemMessage(systemPrompt string) Message {
 	return Message{
+		ID:      utils.GenId("msg"),
 		Role:    RoleSystem,
 		Content: systemPrompt,
 	}
@@ -92,6 +109,7 @@ func SystemMessage(systemPrompt string) Message {
 
 func UserMessage(userPrompt string) Message {
 	return Message{
+		ID:      utils.GenId("msg"),
 		Role:    RoleUser,
 		Content: userPrompt,
 	}
@@ -99,6 +117,7 @@ func UserMessage(userPrompt string) Message {
 
 func AssistantMessage(modelResponse string) Message {
 	return Message{
+		ID:      utils.GenId("msg"),
 		Role:    RoleAssistant,
 		Content: modelResponse,
 	}
@@ -106,6 +125,7 @@ func AssistantMessage(modelResponse string) Message {
 
 func AssistantMessageWithToolCall(modelResponse string, toolCalls []ToolCall) Message {
 	return Message{
+		ID:        utils.GenId("msg"),
 		Role:      RoleAssistant,
 		ToolCalls: toolCalls,
 		Content:   modelResponse,
@@ -114,6 +134,7 @@ func AssistantMessageWithToolCall(modelResponse string, toolCalls []ToolCall) Me
 
 func ToolMessage(callId string, callResult string) Message {
 	return Message{
+		ID:         utils.GenId("msg"),
 		Role:       RoleTool,
 		Content:    callResult,
 		ToolCallID: callId,

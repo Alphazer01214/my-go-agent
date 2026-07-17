@@ -157,6 +157,31 @@ func (m *OpenAIChatModel) StreamChat(ctx context.Context, req *ChatRequest, call
 	}, nil
 }
 
+func (m *OpenAIChatModel) GetModel() string {
+	return m.model
+}
+
+func (m *OpenAIChatModel) GetBaseUrl() string {
+	return m.baseUrl
+}
+
+func (m *OpenAIChatModel) GetApiKey() string {
+	return m.apiKey
+}
+
+func (m *OpenAIChatModel) SetModel(model string) {
+	m.model = model
+}
+
+func (m *OpenAIChatModel) SetBaseUrl(baseUrl string) {
+
+	m.baseUrl = baseUrl
+}
+
+func (m *OpenAIChatModel) SetApiKey(apiKey string) {
+	m.apiKey = apiKey
+}
+
 func (m *OpenAIChatModel) toOpenAIRequest(req *ChatRequest) openaiRequest {
 	model := req.Model
 	if model == "" {

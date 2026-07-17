@@ -122,3 +122,62 @@ func NewExpertManager(model llm.ChatModel, experts []*Expert) *ExpertManager {
 		ToolCallingAgent: NewToolCallingAgent(utils.GenId("agent"), model, tools),
 	}
 }
+
+// ==================== SubagentTool ====================
+
+// SubagentTool 让主 Agent 动态创建子 Agent 处理子任务
+// 子 Agent 继承父 Agent 的 model 和 tools，maxStep 限制为 10
+// 适用于需要独立上下文的调查、分析任务
+type SubagentTool struct {
+	parent *BaseAgent
+}
+
+func NewSubagentTool(parent *BaseAgent) *SubagentTool {
+	return &SubagentTool{parent: parent}
+}
+
+func (s *SubagentTool) Name() string { return "spawn_subagent" }
+func (s *SubagentTool) Description() string {
+	return `创建一个专注的子 Agent 处理子任务。子 Agent 继承父 Agent 的所有工具，maxStep=10。
+适用场景：
+- 需要独立上下文的调查任务（避免污染主对话）
+- 可并行执行的独立子任务
+- 需要多次工具调用但不需要修改文件的分析任务
+注意：子 Agent 仅用于读取和分析，不要让它修改文件。`
+}
+
+func (s *SubagentTool) Parameters() map[string]interface{} {
+	return map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"task": map[string]interface{}{
+				"type":        "string",
+				"description": "子 Agent 的任务描述（清晰、具体，包含预期输出格式）",
+			},
+		},
+		"required": []string{"task"},
+	}
+}
+
+func (s *SubagentTool) Call(ctx context.Context, args string) (string, error) {
+	var param struct {
+		Task string `json:"task"`
+	}
+	if err := json.Unmarshal([]byte(args), &param); err != nil {
+		return "", fmt.Errorf("[spawn_subagent] invalid input: %w", err)
+	}
+
+	session := SessionFromContext(ctx)
+	if session == nil {
+		return "", fmt.Errorf("[spawn_subagent] no session in context")
+	}
+
+	// 创建子 Agent（继承父 Agent 的 model 和 tools，maxStep=10）
+	child := s.parent.NewSubagent(utils.GenId("subagent"), 10)
+	raw, err := child.Run(ctx, session, param.Task)
+	if err != nil {
+		return "", fmt.Errorf("[spawn_subagent] error: %w", err)
+	}
+
+	return formatStructuredToolResult(raw), nil
+}

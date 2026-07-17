@@ -8,3 +8,4 @@ docs/
 *.exe
 logs/
 bin/
+.trae/

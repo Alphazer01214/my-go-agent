@@ -9,7 +9,8 @@ import (
 	"strings"
 )
 
-const MaxReadSizeConst = 1024 * 1024
+// MaxReadSizeConst 绝对最大读取大小，使用 config 常量
+const MaxReadSizeConst = config.ToolMaxReadSizeConst
 
 type ReadFile struct {
 	MaxMaxReadSize int

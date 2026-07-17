@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"time"
 )
 
 type WebSearch struct {
@@ -78,7 +77,7 @@ func (w *WebSearch) Call(ctx context.Context, args string) (string, error) {
 	}
 	req.Header.Set("Authorization", "Bearer "+w.apiKey)
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := &http.Client{Timeout: config.ToolWebSearchTimeout}
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("[web_search] request failed: %w", err)

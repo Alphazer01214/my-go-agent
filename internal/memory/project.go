@@ -1,50 +1,86 @@
 package memory
 
 import (
-	"context"
 	"fmt"
+	"my-go-agent/internal/utils"
+	"os"
+	"path/filepath"
 	"sync"
+	"time"
 )
 
-// Agent 最小化 agent 接口，避免循环依赖（完整接口在 agent 包）
-type Agent interface {
-	Run(ctx context.Context, session *Session, prompt string) (string, error)
-	Name() string
+const contextHeader = `# Project Document
+> Auto-maintained by agent. Do not edit manually.
+> Last updated: %s
+
+`
+
+// ProjectOpts Project 创建选项
+type ProjectOpts struct {
+	Name        string      // 项目名称
+	Path        string      // 项目工作路径（绝对路径），为空时使用当前目录
+	ContextPath string      // 长期记忆文件路径（相对于 memPath），默认 "project.md"
+	Compressor  Compressor  // 消息压缩器（可选，注入到 Session）
 }
 
 // Project 管理项目级别的资源：ProjectContext、Sessions
 type Project struct {
-	mu          sync.RWMutex
-	name        string
-	projectCtx  *ProjectContext
-	sessions    map[string]*Session
-	compressor  Compressor
-}
+	mu         sync.RWMutex
+	name       string
+	path       string // 绝对路径，后续执行都是基于这个路径的相对路径，如果跑出路径要用户确认
+	memPath    string // 项目记忆路径，默认 path/.memory
+	sessions   map[string]*Session
+	compressor Compressor // 消息压缩器，注入到新创建的 Session
 
-// ProjectOpts 创建 Project 的选项
-type ProjectOpts struct {
-	Name        string
-	ContextPath string   // ProjectContext 文件路径，如 ".memory/context.md"
-	Compressor  Compressor
+	contextFile string // 长期记忆文件名，默认 "project.md"
+	pjmd        string // project.md content
 }
 
 // NewProject 创建新的 Project
 func NewProject(opts ProjectOpts) (*Project, error) {
-	p := &Project{
-		name:       opts.Name,
-		sessions:   make(map[string]*Session),
-		compressor: opts.Compressor,
+	workDir := opts.Path
+	if workDir == "" {
+		workDir = utils.CurrentDir()
 	}
 
-	if opts.ContextPath != "" {
-		pc, err := NewProjectContext(opts.ContextPath)
-		if err != nil {
-			return nil, fmt.Errorf("[project] load context: %w", err)
-		}
-		p.projectCtx = pc
+	p := &Project{
+		name:        opts.Name,
+		sessions:    make(map[string]*Session),
+		path:        workDir,
+		memPath:     filepath.Join(workDir, ".memory"),
+		compressor:  opts.Compressor,
+		contextFile: opts.ContextPath,
+	}
+	if p.contextFile == "" {
+		p.contextFile = "project.md"
+	}
+	if err := p.initMemory(); err != nil {
+		return nil, fmt.Errorf("[project] init memory: %w", err)
 	}
 
 	return p, nil
+}
+
+func (p *Project) initMemory() error {
+	// 创建 .memory 目录（已存在则忽略）
+	if err := os.MkdirAll(p.memPath, 0755); err != nil {
+		return err
+	}
+
+	contextPath := filepath.Join(p.memPath, p.contextFile)
+
+	// 如果文件已存在，加载内容；否则创建新文件
+	if data, err := os.ReadFile(contextPath); err == nil {
+		p.pjmd = string(data)
+	} else {
+		header := fmt.Sprintf(contextHeader, time.Now().Format("2006-01-02 15:04:05"))
+		if err := os.WriteFile(contextPath, []byte(header), 0644); err != nil {
+			return err
+		}
+		p.pjmd = header
+	}
+
+	return nil
 }
 
 // Name 返回项目名称
@@ -54,11 +90,26 @@ func (p *Project) Name() string {
 	return p.name
 }
 
-// Context 返回项目长期记忆
-func (p *Project) Context() *ProjectContext {
+// Path 返回项目工作路径
+func (p *Project) Path() string {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	return p.projectCtx
+	return p.path
+}
+
+// GetPjmd 返回项目长期记忆内容
+func (p *Project) GetPjmd() string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.pjmd
+}
+
+// UpdatePjmd 更新项目长期记忆并持久化到文件
+func (p *Project) UpdatePjmd(content string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.pjmd = content
+	return os.WriteFile(filepath.Join(p.memPath, p.contextFile), []byte(content), 0644)
 }
 
 // NewSession 创建新的 Session 并注册到 Project
@@ -66,11 +117,7 @@ func (p *Project) NewSession(agentName string) *Session {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	s := NewSession(SessionOpts{
-		AgentName:  agentName,
-		Compressor: p.compressor,
-		Project:    p,
-	})
+	s := NewSession(p, agentName)
 	p.sessions[s.ID()] = s
 	return s
 }
@@ -98,10 +145,4 @@ func (p *Project) DeleteSession(id string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	delete(p.sessions, id)
-}
-
-// Run 在指定 Session 中执行 agent
-// 这是 Project 级别的入口，CLI 使用它来运行 agent
-func (p *Project) Run(ctx context.Context, agent Agent, session *Session, prompt string) (string, error) {
-	return agent.Run(ctx, session, prompt)
 }

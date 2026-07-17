@@ -21,7 +21,6 @@ type BaseAgent struct {
 	model     llm.ChatModel
 	tools     *tool.Registry
 	sysPrompt string
-	memory    memory.Memory
 	maxStep   int
 	// mode 决定模型 token 的多少，用于本地模型的优化，也许不能放在 agent，后面再设计
 	mode      Mode
@@ -69,13 +68,24 @@ func (a *BaseAgent) AddTools(tools ...tool.Tool) {
 	}
 }
 
+// NewSubagent 创建一个子 Agent，继承父 Agent 的 model、tools、sysPrompt
+func (a *BaseAgent) NewSubagent(name string, maxStep int) *ToolCallingAgent {
+	child := NewToolCallingAgent(name, a.model, a.tools)
+	child.sysPrompt = a.sysPrompt
+	child.maxStep = maxStep
+	child.sharedCtx = a.sharedCtx
+	return child
+}
+
 // BuildSysPrompt 从 session 获取 ProjectContext，构建完整的系统提示
 func (a *BaseAgent) BuildSysPrompt(session *memory.Session) string {
 	p := a.sysPrompt
 	// 注入项目长期记忆
 	if session != nil {
-		if pc := session.ProjectContext(); pc != nil && !pc.IsEmpty() {
-			p += "\n\n## Project Context (from long-term memory)\n" + pc.Content()
+		if proj := session.Project(); proj != nil {
+			if pjmd := proj.GetPjmd(); pjmd != "" {
+				p += "\n\n## Project Context (from long-term memory)\n" + pjmd
+			}
 		}
 	}
 	// 注入共享上下文（父 agent → 子 agent）

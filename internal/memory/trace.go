@@ -17,12 +17,13 @@ import (
 type EventType string
 
 const (
-	EventUser     EventType = "user"      // 用户输入
-	EventThought  EventType = "thought"   // LLM 推理/中间响应
-	EventToolCall EventType = "tool_call" // 工具调用
-	EventResponse EventType = "response"  // 最终响应（agent 完成）
-	EventSandbox  EventType = "sandbox"   // 沙箱拦截
-	EventRestore  EventType = "restore"   // 检查点恢复（不可逆）
+	EventUser      EventType = "user"       // 用户输入
+	EventThought   EventType = "thought"    // LLM 推理/中间响应
+	EventToolCall  EventType = "tool_call"  // 工具调用
+	EventResponse  EventType = "response"   // 最终响应（agent 完成）
+	EventSandbox   EventType = "sandbox"    // 沙箱拦截
+	EventRestore   EventType = "restore"    // 检查点恢复（不可逆）
+	EventCompress  EventType = "compress"   // 消息压缩（可恢复：通过快照恢复）
 )
 
 // FileOp 文件操作类型，执行 tool 的时候记录，这些都是用于 agent 层面记录的
@@ -46,8 +47,14 @@ type FileChange struct {
 // Diff 记录单个事件的状态差分
 type Diff struct {
 	eventId     string
-	msgAdded    int          // 本事件新增的消息数量（用于回滚）
+	msgAdded    int          // 本事件新增的消息数量（兼容旧逻辑）
 	fileChanges []FileChange // 本事件的文件变更（Before/After 完整内容）
+	// 消息 ID 差分（精确回滚）
+	addedMsgs   []string     // 本事件新增的消息 ID（回滚时移除）
+	removedMsgs []string     // 因压缩而移除的消息 ID（回滚时恢复）
+	// 压缩事件专用：保存压缩前的完整消息和摘要快照
+	messages []llm.Message // 压缩前的全部消息（用于回退恢复）
+	summary  string        // 压缩前的摘要文本
 }
 
 // Reverse 返回反向差分（用于回滚）
@@ -236,24 +243,24 @@ func (t *Trace) Clear() {
 
 // AddUserEvent 记录用户输入事件
 // 用户事件本身可回滚（从消息中移除），但通常不需要
-func (t *Trace) AddUserEvent(step int, content string) {
+func (t *Trace) AddUserEvent(step int, content string, addedMsgs []string) {
 	t.AddEvent(Event{
 		Type:        EventUser,
 		Subject:     truncate(content, 80),
 		Recoverable: true,
-		diff:        &Diff{},
+		diff:        &Diff{addedMsgs: addedMsgs},
 	})
 }
 
 // AddThoughtEvent 记录 LLM 推理事件
 // 思考事件可回滚（移除 assistant 消息）
-func (t *Trace) AddThoughtEvent(step int, msg llm.Message, stepContent string) {
+func (t *Trace) AddThoughtEvent(step int, msg llm.Message, stepContent string, addedMsgs []string) {
 	t.AddEvent(Event{
 		Type:        EventThought,
 		Messages:    []llm.Message{msg},
 		Subject:     truncate(stepContent, 80),
 		Recoverable: true,
-		diff:        &Diff{msgAdded: 1},
+		diff:        &Diff{msgAdded: 1, addedMsgs: addedMsgs},
 	})
 }
 
@@ -261,18 +268,37 @@ func (t *Trace) AddThoughtEvent(step int, msg llm.Message, stepContent string) {
 // calls: 本步执行的工具调用记录
 // fileChanges: 本步的文件变更（正向，含 Before/After 完整内容）
 // msgsAdded: 本步新增到 Session 的消息数量（assistant + tool results）
-func (t *Trace) AddToolCallEvent(step int, calls []ToolCall, fileChanges []FileChange, msgsAdded int) {
-	// 判断是否可恢复：有 FileDelete 则不可逆
+// toolNames: 本步调用的工具名称列表（用于判断可回溯性）
+// addedMsgs: 本步新增的消息 ID 列表（用于精确回滚）
+func (t *Trace) AddToolCallEvent(step int, calls []ToolCall, fileChanges []FileChange, msgsAdded int, toolNames []string, addedMsgs []string) {
+	// 判断是否可恢复：
+	// - 有文件变更时：FileDelete 不可逆，其余可逆
+	// - 无文件变更时：只读工具（read_file/list_dir/glob/search_file）可回溯，
+	//   exec_command 等副作用不可确定的工具不可回溯
 	recoverable := true
-	if len(fileChanges) == 0 {
-		recoverable = false // 无文件变更的工具调用不可回滚（如 exec_command）
-	}
-	for _, fc := range fileChanges {
-		if fc.Op == FileDelete {
-			recoverable = false
-			break
+	if len(fileChanges) > 0 {
+		for _, fc := range fileChanges {
+			if fc.Op == FileDelete {
+				recoverable = false
+				break
+			}
 		}
-		// DirCreate 可恢复（尝试删除空目录，非空则跳过）
+	} else {
+		// 无文件变更：只读工具可回溯，其余不可回溯
+		readOnlyTools := map[string]bool{
+			"read_file": true, "list_dir": true,
+			"glob": true, "search_file": true,
+		}
+		allReadOnly := true
+		for _, name := range toolNames {
+			if !readOnlyTools[name] {
+				allReadOnly = false
+				break
+			}
+		}
+		if !allReadOnly {
+			recoverable = false
+		}
 	}
 
 	// 格式化变更摘要
@@ -293,19 +319,19 @@ func (t *Trace) AddToolCallEvent(step int, calls []ToolCall, fileChanges []FileC
 	t.AddEvent(Event{
 		Type:        EventToolCall,
 		Recoverable: recoverable,
-		diff:        &Diff{msgAdded: msgsAdded, fileChanges: fileChanges},
+		diff:        &Diff{msgAdded: msgsAdded, fileChanges: fileChanges, addedMsgs: addedMsgs},
 		DiffSummary: summary,
 	})
 }
 
 // AddResponseEvent 记录最终响应事件
 // 响应事件可回滚（只是移除消息），Recoverable=true
-func (t *Trace) AddResponseEvent(step int, content string) {
+func (t *Trace) AddResponseEvent(step int, content string, addedMsgs []string) {
 	t.AddEvent(Event{
 		Type:        EventResponse,
 		Subject:     truncate(content, 120),
 		Recoverable: true,
-		diff:        &Diff{msgAdded: 1},
+		diff:        &Diff{msgAdded: 1, addedMsgs: addedMsgs},
 	})
 }
 
@@ -326,6 +352,33 @@ func (t *Trace) AddRestoreEvent(targetId, description string) {
 		Subject:     description,
 		Recoverable: false,
 		diff:        &Diff{},
+	})
+}
+
+// AddCompressEvent 记录压缩操作（可恢复：通过快照恢复压缩前的消息）
+// messages: 压缩前的全部消息快照
+// summary: 压缩前的摘要文本
+// msgsAfter: 压缩后的可见消息数量
+// removedMsgs: 因压缩而隐藏的消息 ID 列表
+func (t *Trace) AddCompressEvent(messages []llm.Message, summary string, msgsAfter int, removedMsgs []string) {
+	// 计算被压缩的消息数（压缩前总数 - 压缩后可见数）
+	msgsRemoved := len(messages) - msgsAfter
+	summaryText := fmt.Sprintf("compressed %d messages → %d visible", len(messages), msgsAfter)
+	if summary != "" {
+		summaryText += " (had prior summary)"
+	}
+	t.AddEvent(Event{
+		Type:        EventCompress,
+		Subject:     summaryText,
+		Recoverable: true,
+		diff: &Diff{
+			eventId:     "", // AddEvent 会自动生成 ID
+			msgAdded:    msgsRemoved,
+			removedMsgs: removedMsgs,
+			messages:    messages,
+			summary:     summary,
+		},
+		DiffSummary: summaryText,
 	})
 }
 
@@ -366,11 +419,21 @@ func (t *Trace) Restore(eventId string, session *Session) (*RestoreResult, error
 	// 2. 逆序回滚（硬回溯：遇到不可逆事件跳过文件回滚，但继续回滚消息）
 	for i := len(t.events) - 1; i > targetIdx; i-- {
 		evt := &t.events[i]
-		if evt.diff == nil {
-			// 无 diff 的事件只回滚消息
-			if evt.diff != nil && evt.diff.msgAdded > 0 {
-				session.RemoveLastMessages(evt.diff.msgAdded)
+
+		// 压缩事件：恢复被压缩隐藏的消息
+		if evt.Type == EventCompress && evt.diff != nil {
+			// 优先用 removedMsgs 精确恢复，fallback 到快照
+			if len(evt.diff.removedMsgs) > 0 {
+				session.RestoreMessagesByID(evt.diff.removedMsgs)
+			} else if evt.diff.messages != nil {
+				session.SetMessages(evt.diff.messages)
 			}
+			session.SetSummary(evt.diff.summary)
+			result.RolledBack++
+			continue
+		}
+
+		if evt.diff == nil {
 			result.RolledBack++
 			continue
 		}
@@ -386,13 +449,18 @@ func (t *Trace) Restore(eventId string, session *Session) (*RestoreResult, error
 				}
 				result.FilesReverted++
 			}
-			if evt.diff.msgAdded > 0 {
+			// 优先用 addedMsgs 精确移除，fallback 到计数
+			if len(evt.diff.addedMsgs) > 0 {
+				session.RemoveMessagesByID(evt.diff.addedMsgs)
+			} else if evt.diff.msgAdded > 0 {
 				session.RemoveLastMessages(evt.diff.msgAdded)
 			}
 			result.RolledBack++
 		} else {
 			// 不可恢复：跳过文件回滚，但仍回滚消息
-			if evt.diff.msgAdded > 0 {
+			if len(evt.diff.addedMsgs) > 0 {
+				session.RemoveMessagesByID(evt.diff.addedMsgs)
+			} else if evt.diff.msgAdded > 0 {
 				session.RemoveLastMessages(evt.diff.msgAdded)
 			}
 			result.Skipped++
@@ -531,6 +599,8 @@ func (t *Trace) FormatEvent(e Event) string {
 		return fmt.Sprintf("\n[%s] %s  response\n  %s\n", e.Id, ts, e.Subject)
 	case EventSandbox:
 		return fmt.Sprintf("\n[%s] %s  sandbox\n  %s\n", e.Id, ts, e.Subject)
+	case EventCompress:
+		return fmt.Sprintf("\n[%s] %s  compress (recoverable)\n  %s\n", e.Id, ts, e.Subject)
 	case EventRestore:
 		return fmt.Sprintf("\n[%s] %s  restore (irreversible)\n  %s\n", e.Id, ts, e.Subject)
 	default:

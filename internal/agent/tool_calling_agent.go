@@ -45,10 +45,11 @@ func (a *ToolCallingAgent) Run(ctx context.Context, session *memory.Session, pro
 		session.AddMessage(llm.SystemMessage(a.BuildSysPrompt(session)))
 		session.MarkSystemSet()
 	}
-	session.AddMessage(llm.UserMessage(prompt))
+	userMsg := llm.UserMessage(prompt)
+	session.AddMessage(userMsg)
 
 	trace := session.Trace()
-	trace.AddUserEvent(0, prompt)
+	trace.AddUserEvent(0, prompt, []string{userMsg.ID})
 
 	res := ""
 	calledTools := make(map[string]int)
@@ -79,7 +80,6 @@ func (a *ToolCallingAgent) Run(ctx context.Context, session *memory.Session, pro
 		}
 		fmt.Println()
 
-		// 优先使用流式累积内容，fallback 到 resp.Content
 		llmOutput := streamBuf.String()
 		if llmOutput == "" {
 			llmOutput = resp.Content
@@ -89,8 +89,9 @@ func (a *ToolCallingAgent) Run(ctx context.Context, session *memory.Session, pro
 		if len(resp.ToolCalls) == 0 {
 			if llmOutput != "" {
 				res += llmOutput
-				session.AddMessage(llm.AssistantMessage(llmOutput))
-				trace.AddResponseEvent(step, llmOutput)
+				respMsg := llm.AssistantMessage(llmOutput)
+				session.AddMessage(respMsg)
+				trace.AddResponseEvent(step, llmOutput, []string{respMsg.ID})
 			}
 			return res, nil
 		}
@@ -99,6 +100,8 @@ func (a *ToolCallingAgent) Run(ctx context.Context, session *memory.Session, pro
 		if llmOutput != "" {
 			res += llmOutput
 		}
+
+		// tool 请求
 		assistantMsg := llm.AssistantMessageWithToolCall(llmOutput, resp.ToolCalls)
 		session.AddMessage(assistantMsg)
 
@@ -106,9 +109,13 @@ func (a *ToolCallingAgent) Run(ctx context.Context, session *memory.Session, pro
 		//var duplicateWarnings []string
 		var toolRecords []memory.ToolCall
 		var allFileChanges []memory.FileChange
+		var toolNames []string // 记录本步调用的工具名称（用于可回溯性判断）
+		var addedMsgIDs []string // 记录本步新增的消息 ID（用于精确回滚）
+		addedMsgIDs = append(addedMsgIDs, assistantMsg.ID)
 		msgsAddedThisStep := 1 // assistant 消息
 
 		for _, call := range resp.ToolCalls {
+			toolNames = append(toolNames, call.Function.Name)
 			callKey := call.Function.Name + "|" + utils.NormalizeJSON(call.Function.Arguments)
 			calledTools[callKey]++
 
@@ -139,8 +146,10 @@ func (a *ToolCallingAgent) Run(ctx context.Context, session *memory.Session, pro
 			fileChanges := detectFileChangesAfter(fileChangesBefore, call.Function.Name, call.Function.Arguments)
 			allFileChanges = append(allFileChanges, fileChanges...)
 
+			// tool 结果
 			toolMsg := llm.ToolMessage(call.ID, result)
 			session.AddMessage(toolMsg)
+			addedMsgIDs = append(addedMsgIDs, toolMsg.ID)
 			msgsAddedThisStep++ // tool result 消息
 
 			toolRecords = append(toolRecords, memory.ToolCall{
@@ -151,8 +160,8 @@ func (a *ToolCallingAgent) Run(ctx context.Context, session *memory.Session, pro
 			})
 		}
 
-		// 记录工具调用事件（含 assistant + tool results 的消息数）
-		trace.AddToolCallEvent(step, toolRecords, allFileChanges, msgsAddedThisStep)
+		// 记录工具调用事件（含 assistant + tool results 的消息数和 ID）
+		trace.AddToolCallEvent(step, toolRecords, allFileChanges, msgsAddedThisStep, toolNames, addedMsgIDs)
 
 		//if len(duplicateWarnings) > 0 {
 		//	warningMsg := strings.Join(duplicateWarnings, "\n")

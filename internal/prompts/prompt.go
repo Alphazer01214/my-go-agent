@@ -31,6 +31,7 @@ const (
 - start_todo: 标记待办事项为进行中
 - complete_todo: 标记待办事项为已完成
 - list_todos: 列出所有待办事项
+- spawn_subagent: 创建子 Agent 处理独立子任务（仅读取分析，不修改文件）
 
 ## 工具使用策略
 

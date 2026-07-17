@@ -4,6 +4,8 @@ import (
 	"strings"
 )
 
+// subagent 的设计：仅调查而不改文件，改动操作交给 parent agent 实现（因为要实现 trace restore）
+
 // Mode agent 运行模式，影响 system prompt 和返回格式
 type Mode string
 

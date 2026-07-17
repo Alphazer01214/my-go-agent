@@ -3,6 +3,7 @@ package utils
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -141,4 +142,13 @@ var genIdCounter atomic.Uint64
 func GenId(name string) string {
 	n := genIdCounter.Add(1)
 	return fmt.Sprintf("%s_%d_%d", name, time.Now().UnixMilli(), n)
+}
+
+// CurrentDir 返回当前工作目录，成功时返回目录路径，失败时返回空字符串
+func CurrentDir() string {
+	dir, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	return dir
 }

@@ -105,6 +105,9 @@ func (c *ChatModelWithLog) StreamChat(ctx context.Context, req *llm.ChatRequest,
 	return resp, nil
 }
 
+func (c *ChatModelWithLog) GetModel() string      { return c.model.GetModel() }
+func (c *ChatModelWithLog) SetModel(model string)  { c.model.SetModel(model) }
+
 // ComposeChatMiddlewares 组合多个 ChatModel 中间件，从左到右执行
 func ComposeChatMiddlewares(middlewares ...ChatModelMiddleware) ChatModelMiddleware {
 	return func(m llm.ChatModel) llm.ChatModel {

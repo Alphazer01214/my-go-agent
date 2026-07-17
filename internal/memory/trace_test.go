@@ -118,7 +118,7 @@ func TestDiffReverse_Empty(t *testing.T) {
 
 func TestAddUserEvent(t *testing.T) {
 	tr := NewTrace("test")
-	tr.AddUserEvent(0, "hello world")
+	tr.AddUserEvent(0, "hello world", nil)
 
 	events := tr.Events()
 	if len(events) != 1 {
@@ -142,6 +142,8 @@ func TestAddToolCallEvent_WithFileChanges(t *testing.T) {
 		[]ToolCall{{Name: "write_file", Args: `{"path":"a"}`, Result: "ok"}},
 		[]FileChange{{Path: "a", Op: FileCreate, Before: "", After: "content"}},
 		3, // 1 assistant + 2 tool results
+		[]string{"write_file"},
+		nil,
 	)
 
 	events := tr.Events()
@@ -172,6 +174,8 @@ func TestAddToolCallEvent_WithExecCommand(t *testing.T) {
 		[]ToolCall{{Name: "exec_command", Args: `{"command":"ls"}`, Result: "ok"}},
 		nil, // exec_command 无文件变更
 		2,
+		[]string{"exec_command"},
+		nil,
 	)
 
 	events := tr.Events()
@@ -187,12 +191,33 @@ func TestAddToolCallEvent_WithFileDelete(t *testing.T) {
 		[]ToolCall{{Name: "exec_command", Args: `{"command":"rm f"}`, Result: "ok"}},
 		[]FileChange{{Path: "f.go", Op: FileDelete, Before: "content", After: ""}},
 		2,
+		[]string{"exec_command"},
+		nil,
 	)
 
 	events := tr.Events()
 	e := events[0]
 	if e.Recoverable {
 		t.Error("file delete should not be recoverable")
+	}
+}
+
+func TestAddToolCallEvent_ReadOnlyTools(t *testing.T) {
+	// read_file、list_dir、glob、search_file 等只读工具应可回溯
+	readOnlyTools := []string{"read_file", "list_dir", "glob", "search_file"}
+	for _, toolName := range readOnlyTools {
+		tr := NewTrace("test")
+		tr.AddToolCallEvent(1,
+			[]ToolCall{{Name: toolName, Args: "{}", Result: "content"}},
+			nil, // 无文件变更
+			2,
+			[]string{toolName},
+			nil,
+		)
+		events := tr.Events()
+		if !events[0].Recoverable {
+			t.Errorf("read-only tool %s should be recoverable", toolName)
+		}
 	}
 }
 
@@ -228,7 +253,7 @@ func TestAddRestoreEvent(t *testing.T) {
 
 // helper: 创建带消息的 session
 func createTestSession() *Session {
-	return NewSession(SessionOpts{AgentName: "test"})
+	return NewSession(nil, "test")
 }
 
 // helper: 创建临时文件
@@ -258,19 +283,21 @@ func TestRestore_Basic(t *testing.T) {
 	trace := session.Trace()
 
 	// Event 0: user
-	trace.AddUserEvent(0, "do something")
+	trace.AddUserEvent(0, "do something", nil)
 
 	// Event 1: tool call that modifies file
 	trace.AddToolCallEvent(1,
 		[]ToolCall{{Name: "edit_file", Args: "{}", Result: "ok"}},
 		[]FileChange{{Path: path, Op: FileModify, Before: "original", After: "modified"}},
 		3, // assistant + tool result
+		[]string{"edit_file"},
+		nil,
 	)
 	// 实际修改文件
 	os.WriteFile(path, []byte("modified"), 0644)
 
 	// Event 2: response
-	trace.AddResponseEvent(1, "done")
+	trace.AddResponseEvent(1, "done", nil)
 
 	// 验证文件被修改
 	data, _ := os.ReadFile(path)
@@ -314,11 +341,13 @@ func TestRestore_FileCreate(t *testing.T) {
 	session.AddMessage(llm.ToolMessage("call1", "ok"))
 
 	trace := session.Trace()
-	trace.AddUserEvent(0, "create file")
+	trace.AddUserEvent(0, "create file", nil)
 	trace.AddToolCallEvent(1,
 		[]ToolCall{{Name: "write_file", Args: "{}", Result: "ok"}},
 		[]FileChange{{Path: path, Op: FileCreate, Before: "", After: "new content"}},
 		2,
+		[]string{"write_file"},
+		nil,
 	)
 	// 实际创建文件
 	os.WriteFile(path, []byte("new content"), 0644)
@@ -357,13 +386,15 @@ func TestRestore_MultipleEvents_ReverseOrder(t *testing.T) {
 	session.AddMessage(llm.AssistantMessage("done"))
 
 	trace := session.Trace()
-	trace.AddUserEvent(0, "edit")
+	trace.AddUserEvent(0, "edit", nil)
 
 	// Event 1: V0 → V1
 	trace.AddToolCallEvent(1,
 		[]ToolCall{{Name: "edit_file"}},
 		[]FileChange{{Path: path, Op: FileModify, Before: "V0", After: "V1"}},
 		3,
+		[]string{"edit_file"},
+		nil,
 	)
 	os.WriteFile(path, []byte("V1"), 0644)
 
@@ -372,11 +403,13 @@ func TestRestore_MultipleEvents_ReverseOrder(t *testing.T) {
 		[]ToolCall{{Name: "edit_file"}},
 		[]FileChange{{Path: path, Op: FileModify, Before: "V1", After: "V2"}},
 		3,
+		[]string{"edit_file"},
+		nil,
 	)
 	os.WriteFile(path, []byte("V2"), 0644)
 
 	// Event 3: response
-	trace.AddResponseEvent(2, "done")
+	trace.AddResponseEvent(2, "done", nil)
 
 	// 恢复到 Event 0
 	events := trace.Events()
@@ -408,13 +441,15 @@ func TestRestore_HardRestore_IrreversibleEvent(t *testing.T) {
 	session.AddMessage(llm.AssistantMessage("done"))
 
 	trace := session.Trace()
-	trace.AddUserEvent(0, "run")
+	trace.AddUserEvent(0, "run", nil)
 
 	// Event 1: exec_command (不可恢复)
 	trace.AddToolCallEvent(1,
 		[]ToolCall{{Name: "exec_command", Args: `{"command":"ls"}`, Result: "output"}},
 		nil, // 无文件变更
 		2,
+		[]string{"exec_command"},
+		nil,
 	)
 
 	// Event 2: file edit (可恢复)
@@ -422,6 +457,8 @@ func TestRestore_HardRestore_IrreversibleEvent(t *testing.T) {
 		[]ToolCall{{Name: "edit_file"}},
 		[]FileChange{{Path: path, Op: FileModify, Before: "old", After: "new"}},
 		2,
+		[]string{"edit_file"},
+		nil,
 	)
 	os.WriteFile(path, []byte("new"), 0644)
 
@@ -473,13 +510,15 @@ func TestRestore_HardRestore_MixedReversibleAndNot(t *testing.T) {
 	session.AddMessage(llm.AssistantMessage("done"))
 
 	trace := session.Trace()
-	trace.AddUserEvent(0, "do stuff")
+	trace.AddUserEvent(0, "do stuff", nil)
 
 	// Event 1: file edit (可恢复)
 	trace.AddToolCallEvent(1,
 		[]ToolCall{{Name: "edit_file"}},
 		[]FileChange{{Path: pathEdit, Op: FileModify, Before: "original", After: "edited"}},
 		2,
+		[]string{"edit_file"},
+		nil,
 	)
 	os.WriteFile(pathEdit, []byte("edited"), 0644)
 
@@ -488,11 +527,13 @@ func TestRestore_HardRestore_MixedReversibleAndNot(t *testing.T) {
 		[]ToolCall{{Name: "exec_command"}},
 		[]FileChange{{Path: pathDelete, Op: FileDelete, Before: "to_delete", After: ""}},
 		2,
+		[]string{"exec_command"},
+		nil,
 	)
 	os.Remove(pathDelete)
 
 	// Event 3: response
-	trace.AddResponseEvent(3, "done")
+	trace.AddResponseEvent(3, "done", nil)
 
 	// 硬回溯到 Event 0
 	events := trace.Events()
@@ -534,11 +575,13 @@ func TestRestore_DirCreate(t *testing.T) {
 	session.AddMessage(llm.ToolMessage("c1", "ok"))
 
 	trace := session.Trace()
-	trace.AddUserEvent(0, "create dir")
+	trace.AddUserEvent(0, "create dir", nil)
 	trace.AddToolCallEvent(1,
 		[]ToolCall{{Name: "make_dir", Args: `{"path":"newpkg"}`, Result: "ok"}},
 		[]FileChange{{Path: newDir, Op: DirCreate, Before: "", After: newDir}},
 		2,
+		[]string{"make_dir"},
+		nil,
 	)
 	// 实际创建目录
 	os.Mkdir(newDir, 0755)
@@ -578,18 +621,22 @@ func TestRestore_DirCreate_ThenFileCreate(t *testing.T) {
 	session.AddMessage(llm.ToolMessage("c2", "ok"))
 
 	trace := session.Trace()
-	trace.AddUserEvent(0, "mkdir + write")
+	trace.AddUserEvent(0, "mkdir + write", nil)
 	// Event 1: 创建目录
 	trace.AddToolCallEvent(1,
 		[]ToolCall{{Name: "make_dir"}},
 		[]FileChange{{Path: newDir, Op: DirCreate, Before: "", After: newDir}},
 		2,
+		[]string{"make_dir"},
+		nil,
 	)
 	// Event 2: 在目录中写文件
 	trace.AddToolCallEvent(2,
 		[]ToolCall{{Name: "write_file"}},
 		[]FileChange{{Path: filepath.Join(newDir, "file.go"), Op: FileCreate, Before: "", After: "code"}},
 		2,
+		[]string{"write_file"},
+		nil,
 	)
 
 	// 恢复到 Event 0 — 逆序：先删文件（目录变空），再删目录
@@ -621,12 +668,14 @@ func TestRestore_DirCreate_WithExternalFile(t *testing.T) {
 	session.AddMessage(llm.ToolMessage("c1", "ok"))
 
 	trace := session.Trace()
-	trace.AddUserEvent(0, "mkdir")
+	trace.AddUserEvent(0, "mkdir", nil)
 	// Event 1: 创建目录（trace 中没有记录 external.txt）
 	trace.AddToolCallEvent(1,
 		[]ToolCall{{Name: "make_dir"}},
 		[]FileChange{{Path: newDir, Op: DirCreate, Before: "", After: newDir}},
 		2,
+		[]string{"make_dir"},
+		nil,
 	)
 
 	// 恢复 — 目录非空（有外部文件），DirCreate 回滚静默跳过
@@ -644,7 +693,7 @@ func TestRestore_DirCreate_WithExternalFile(t *testing.T) {
 
 func TestRestore_AlreadyAtTarget(t *testing.T) {
 	trace := NewTrace("test")
-	trace.AddUserEvent(0, "hello")
+	trace.AddUserEvent(0, "hello", nil)
 
 	events := trace.Events()
 	_, err := trace.Restore(events[0].Id, nil)
@@ -655,7 +704,7 @@ func TestRestore_AlreadyAtTarget(t *testing.T) {
 
 func TestRestore_EventNotFound(t *testing.T) {
 	trace := NewTrace("test")
-	trace.AddUserEvent(0, "hello")
+	trace.AddUserEvent(0, "hello", nil)
 
 	_, err := trace.Restore("nonexistent", nil)
 	if err == nil {
@@ -665,13 +714,15 @@ func TestRestore_EventNotFound(t *testing.T) {
 
 func TestCanRestore(t *testing.T) {
 	trace := NewTrace("test")
-	trace.AddUserEvent(0, "hello")
+	trace.AddUserEvent(0, "hello", nil)
 	trace.AddToolCallEvent(1,
 		[]ToolCall{{Name: "edit_file"}},
 		[]FileChange{{Path: "a", Op: FileModify, Before: "old", After: "new"}},
 		2,
+		[]string{"edit_file"},
+		nil,
 	)
-	trace.AddResponseEvent(1, "done")
+	trace.AddResponseEvent(1, "done", nil)
 
 	events := trace.Events()
 
@@ -699,13 +750,15 @@ func TestCanRestore(t *testing.T) {
 
 func TestCanRestore_Irreversible(t *testing.T) {
 	trace := NewTrace("test")
-	trace.AddUserEvent(0, "run")
+	trace.AddUserEvent(0, "run", nil)
 	trace.AddToolCallEvent(1,
 		[]ToolCall{{Name: "exec_command"}},
 		nil,
 		2,
+		[]string{"exec_command"},
+		nil,
 	)
-	trace.AddResponseEvent(1, "done")
+	trace.AddResponseEvent(1, "done", nil)
 
 	events := trace.Events()
 	ok, willSkip, reason := trace.CanRestore(events[0].Id)
@@ -732,13 +785,15 @@ func TestRestore_MessageRollback(t *testing.T) {
 	initialCount := session.MessageCount()
 
 	trace := session.Trace()
-	trace.AddUserEvent(0, "do it")
+	trace.AddUserEvent(0, "do it", nil)
 	trace.AddToolCallEvent(1,
 		[]ToolCall{{Name: "edit_file"}},
 		[]FileChange{{Path: "a", Op: FileModify, Before: "old", After: "new"}},
 		3,
+		[]string{"edit_file"},
+		nil,
 	)
-	trace.AddResponseEvent(1, "done")
+	trace.AddResponseEvent(1, "done", nil)
 
 	// 恢复到 user event — 应该移除 tool call 和 response 的消息
 	events := trace.Events()
@@ -766,13 +821,15 @@ func TestFormat_Empty(t *testing.T) {
 
 func TestFormat_WithEvents(t *testing.T) {
 	trace := NewTrace("test")
-	trace.AddUserEvent(0, "hello")
+	trace.AddUserEvent(0, "hello", nil)
 	trace.AddToolCallEvent(1,
 		[]ToolCall{{Name: "write_file", Args: `{"path":"a"}`, Result: "ok"}},
 		[]FileChange{{Path: "a", Op: FileCreate, Before: "", After: "content"}},
 		2,
+		[]string{"write_file"},
+		nil,
 	)
-	trace.AddResponseEvent(1, "done")
+	trace.AddResponseEvent(1, "done", nil)
 
 	s := trace.Format()
 	if s == "" {
@@ -831,11 +888,11 @@ func TestTraceTree_ParentChild(t *testing.T) {
 
 func TestAllEvents_Flattened(t *testing.T) {
 	parent := NewTrace("parent")
-	parent.AddUserEvent(0, "parent input")
+	parent.AddUserEvent(0, "parent input", nil)
 
 	child := parent.NewChildTrace("child")
-	child.AddUserEvent(0, "child input")
-	child.AddResponseEvent(1, "child done")
+	child.AddUserEvent(0, "child input", nil)
+	child.AddResponseEvent(1, "child done", nil)
 
 	all := parent.AllEvents()
 	if len(all) != 3 {

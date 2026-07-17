@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"my-go-agent/internal/config"
 	"my-go-agent/internal/llm"
 	"my-go-agent/internal/sandbox"
 	"sync"
@@ -159,7 +160,7 @@ func (r *Registry) ToLLMTool() []llm.Tool {
 func DefaultRegistry() *Registry {
 	return NewRegistry(
 		NewListDirTool(),
-		NewReadFileTool(1024),
+		NewReadFileTool(config.ReadFileSize),
 		NewExecCommandTool(),
 		NewWriteFileTool(),
 		NewEditFileTool(),

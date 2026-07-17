@@ -27,10 +27,22 @@ const (
 
 // Tool 配置常量
 const (
-	ToolSearchMaxResults = 20               // search_file 最大结果数
-	ToolGlobMaxResults   = 50               // glob 最大结果数
-	ToolWebSearchResults = 3                // web_search 默认结果数
-	ToolExecTimeout      = 60 * time.Second // exec_command 超时
+	ToolSearchMaxResults  = 20               // search_file 最大结果数
+	ToolGlobMaxResults    = 50               // glob 最大结果数
+	ToolWebSearchResults  = 3                // web_search 默认结果数
+	ToolExecTimeout       = 60 * time.Second // exec_command 超时
+	ToolMaxReadSizeConst  = 1024 * 1024      // read_file 绝对最大读取大小（1MB）
+	ToolSearchBinaryLimit = 1024 * 1024      // search_file 跳过超过此大小的文件（视为二进制）
+	ToolWebSearchTimeout  = 10 * time.Second // web_search HTTP 超时
+)
+
+// 项目配置常量
+const (
+	DefaultContextFile     = "project.md"     // 默认长期记忆文件名
+	DefaultMemoryDir       = ".memory"        // 默认记忆目录名
+	DefaultSingleRunTimeout = 300 * time.Second // 单次运行超时
+	DefaultCompressThreshold = 100            // 自动压缩阈值（可见消息数）
+	DefaultKeepGroups      = 10               // 自动压缩保留的消息组数
 )
 
 // 变量（可通过环境变量或函数修改）

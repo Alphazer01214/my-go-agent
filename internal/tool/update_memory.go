@@ -5,10 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"my-go-agent/internal/memory"
+	"time"
 )
 
 type UpdateMemory struct {
-	projectCtx *memory.ProjectContext
+	project *memory.Project
 }
 
 type UpdateMemoryArgs struct {
@@ -16,8 +17,8 @@ type UpdateMemoryArgs struct {
 	Content string `json:"content"`
 }
 
-func NewUpdateMemoryTool(ctx *memory.ProjectContext) *UpdateMemory {
-	return &UpdateMemory{projectCtx: ctx}
+func NewUpdateMemoryTool(project *memory.Project) *UpdateMemory {
+	return &UpdateMemory{project: project}
 }
 
 func (u *UpdateMemory) Name() string {
@@ -63,7 +64,9 @@ func (u *UpdateMemory) Call(ctx context.Context, args string) (string, error) {
 		if arg.Content == "" {
 			return "", fmt.Errorf("[update_memory] content is required for append")
 		}
-		if err := u.projectCtx.AppendSection(arg.Content); err != nil {
+		existing := u.project.GetPjmd()
+		newContent := existing + "\n" + arg.Content + "\n"
+		if err := u.project.UpdatePjmd(newContent); err != nil {
 			return "", err
 		}
 		return "memory updated (appended)", nil
@@ -71,12 +74,13 @@ func (u *UpdateMemory) Call(ctx context.Context, args string) (string, error) {
 		if arg.Content == "" {
 			return "", fmt.Errorf("[update_memory] content is required for replace")
 		}
-		if err := u.projectCtx.SetContent(arg.Content); err != nil {
+		if err := u.project.UpdatePjmd(arg.Content); err != nil {
 			return "", err
 		}
 		return "memory replaced", nil
 	case "clear":
-		if err := u.projectCtx.SetContent(""); err != nil {
+		header := fmt.Sprintf("# Project Document\n> Auto-maintained by agent. Do not edit manually.\n> Last updated: %s\n\n", time.Now().Format("2006-01-02 15:04:05"))
+		if err := u.project.UpdatePjmd(header); err != nil {
 			return "", err
 		}
 		return "memory cleared", nil
