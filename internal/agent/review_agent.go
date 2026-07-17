@@ -44,7 +44,7 @@ type ReviewAgent struct {
 
 func NewReviewAgent(model llm.ChatModel) *ReviewAgent {
 	base := NewBaseAgent("code_review", model, nil)
-	base.SysPrompt = "你是一个专业的代码审查助手，负责审查代码并提供反馈，只能输出JSON格式的反馈"
+	base.sysPrompt = "你是一个专业的代码审查助手，负责审查代码并提供反馈，只能输出JSON格式的反馈"
 	return &ReviewAgent{BaseAgent: base}
 }
 
@@ -67,11 +67,11 @@ func (a *ReviewAgent) Run(ctx context.Context, session *memory.Session, prompt s
 
 	req := &llm.ChatRequest{
 		Messages: []llm.Message{
-			llm.SystemMessage(a.SysPrompt),
+			llm.SystemMessage(a.sysPrompt),
 			llm.UserMessage(promptText),
 		},
 	}
-	resp, err := a.Model.Chat(ctx, req)
+	resp, err := a.model.Chat(ctx, req)
 	if err != nil {
 		return "", fmt.Errorf("[review_agent] chat: %w", err)
 	}

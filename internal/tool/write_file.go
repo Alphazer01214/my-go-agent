@@ -34,7 +34,7 @@ func (w *WriteFile) Parameters() map[string]interface{} {
 		"properties": map[string]interface{}{
 			"path": map[string]interface{}{
 				"type":        "string",
-				"description": "Relative file path (e.g. \"cmd/main.go\")",
+				"description": "Relative file path from project root (e.g. \"cmd/main.go\"). NEVER use absolute paths",
 			},
 			"content": map[string]interface{}{
 				"type":        "string",

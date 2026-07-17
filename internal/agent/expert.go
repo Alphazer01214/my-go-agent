@@ -7,6 +7,7 @@ import (
 	"my-go-agent/internal/llm"
 	"my-go-agent/internal/memory"
 	"my-go-agent/internal/tool"
+	"my-go-agent/internal/utils"
 )
 
 // WithSession 将 Session 注入 context（代理到 memory 包）
@@ -29,7 +30,7 @@ type Expert struct {
 // ExpertAsTool 将 Expert 包装为 tool.Tool，使其可被 ToolCallingAgent 调用
 type ExpertAsTool struct {
 	expert    *Expert
-	mode      Mode          // 子 agent 运行模式
+	mode      Mode           // 子 agent 运行模式
 	sharedCtx *SharedContext // 传递给子 agent 的共享上下文
 }
 
@@ -74,7 +75,7 @@ func (e *ExpertAsTool) Call(ctx context.Context, args string) (string, error) {
 		return "", fmt.Errorf("[expert] no session in context")
 	}
 
-	child := e.createChildAgent()
+	child := e.createChildAgent(utils.GenId("subagent"))
 	raw, err := child.Run(ctx, session, param.Task)
 	if err != nil {
 		return "", err
@@ -87,13 +88,13 @@ func (e *ExpertAsTool) Call(ctx context.Context, args string) (string, error) {
 }
 
 // createChildAgent 基于 expert 的 agent 创建子 agent
-func (e *ExpertAsTool) createChildAgent() *ToolCallingAgent {
+func (e *ExpertAsTool) createChildAgent(name string) *ToolCallingAgent {
 	base := e.expert.Agent.Base()
-	child := NewToolCallingAgent(base.Model, base.Tools)
-	child.SysPrompt = base.SysPrompt
-	child.MaxStep = base.MaxStep
-	child.Mode = e.mode
-	child.SharedCtx = e.sharedCtx
+	child := NewToolCallingAgent(name, base.model, base.tools)
+	child.sysPrompt = base.sysPrompt
+	child.maxStep = base.maxStep
+	child.mode = e.mode
+	child.sharedCtx = e.sharedCtx
 	return child
 }
 
@@ -118,6 +119,6 @@ func NewExpertManager(model llm.ChatModel, experts []*Expert) *ExpertManager {
 		tools.Register(NewExpertAsTool(expert))
 	}
 	return &ExpertManager{
-		ToolCallingAgent: NewToolCallingAgent(model, tools),
+		ToolCallingAgent: NewToolCallingAgent(utils.GenId("agent"), model, tools),
 	}
 }

@@ -163,6 +163,7 @@ func DefaultRegistry() *Registry {
 		NewExecCommandTool(),
 		NewWriteFileTool(),
 		NewEditFileTool(),
+		NewMakeDirTool(),
 		NewSearchFileTool(),
 		NewGlobTool(),
 	)

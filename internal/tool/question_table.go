@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -72,8 +73,8 @@ func (q *QuestionTable) Parameters() map[string]interface{} {
 }
 
 type questionArgs struct {
-	Question string         `json:"question"`
-	Options  []optionEntry  `json:"options,omitempty"`
+	Question string        `json:"question"`
+	Options  []optionEntry `json:"options,omitempty"`
 }
 
 type optionEntry struct {
@@ -98,9 +99,9 @@ func (q *QuestionTable) Call(ctx context.Context, args string) (string, error) {
 	default:
 	}
 
-	// 显示问题
-	fmt.Fprintf(q.writer, "\n  ❓ %s\n", arg.Question)
+	fmt.Fprintf(q.writer, "\n Question: %s\n", arg.Question)
 
+	// 处理模型让用户自由回答的情况
 	if len(arg.Options) > 0 {
 		return q.handleOptions(arg.Options)
 	}
@@ -110,6 +111,7 @@ func (q *QuestionTable) Call(ctx context.Context, args string) (string, error) {
 // handleOptions 处理有选项的提问
 func (q *QuestionTable) handleOptions(options []optionEntry) (string, error) {
 	// 显示选项
+	choices := len(options)
 	for i, opt := range options {
 		if opt.Description != "" {
 			fmt.Fprintf(q.writer, "  [%d] %s — %s\n", i+1, opt.Label, opt.Description)
@@ -121,59 +123,53 @@ func (q *QuestionTable) handleOptions(options []optionEntry) (string, error) {
 	fmt.Fprintf(q.writer, "  > ")
 
 	scanner := bufio.NewScanner(q.reader)
-	if !scanner.Scan() {
-		return "", fmt.Errorf("no input")
-	}
-	input := strings.TrimSpace(scanner.Text())
+	var res map[string]interface{}
 
-	// 尝试解析为数字选择
-	if input != "" && input != "0" {
-		for i, opt := range options {
-			// 匹配数字
-			if fmt.Sprintf("%d", i+1) == input {
-				result := map[string]interface{}{
-					"choice": opt.Label,
-					"index":  i + 1,
-				}
-				out, _ := json.Marshal(result)
-				return string(out), nil
-			}
-			// 匹配标签（大小写不敏感）
-			if strings.EqualFold(opt.Label, input) {
-				result := map[string]interface{}{
-					"choice": opt.Label,
-					"index":  i + 1,
-				}
-				out, _ := json.Marshal(result)
-				return string(out), nil
-			}
-		}
-	}
-
-	// 用户输入了自定义内容
-	if input == "0" {
-		fmt.Fprintf(q.writer, "  Your answer: ")
+	for {
+		// scan 阻塞，input 收集字符
 		if !scanner.Scan() {
-			return "", fmt.Errorf("no input")
+			fmt.Printf("\n No input, please try again: ")
+			continue
 		}
-		input = strings.TrimSpace(scanner.Text())
-	}
 
-	if input == "" {
-		return "", fmt.Errorf("no input provided")
-	}
+		input := strings.TrimSpace(scanner.Text())
+		op, err := strconv.Atoi(input)
+		if err != nil || op < 0 || op > choices+1 {
+			fmt.Printf("\n Invalid input, please try again: ")
+			continue
+		}
+		if op == 0 {
+			fmt.Fprintf(q.writer, "  Your answer (empty to let the model decide): ")
+			if !scanner.Scan() {
+				res = map[string]interface{}{
+					"choice": "custom",
+					"answer": "choose the best option",
+				}
+				break
+			}
+			input = strings.TrimSpace(scanner.Text())
+			res = map[string]interface{}{
+				"choice": "custom",
+				"answer": input,
+			}
+			break
+		} else {
+			res = map[string]interface{}{
+				"choice": options[op-1].Label,
+				"index":  op,
+			}
+			break
+		}
 
-	result := map[string]interface{}{
-		"choice":  "custom",
-		"answer":  input,
 	}
-	out, _ := json.Marshal(result)
+	out, _ := json.Marshal(res)
 	return string(out), nil
 }
 
 // handleFreeInput 处理自由输入的提问
 func (q *QuestionTable) handleFreeInput() (string, error) {
-	fmt.Fprintf(q.writer, "  Your answer: ")
+	var res map[string]interface{}
+	fmt.Fprintf(q.writer, "  Your answer(empty to let the model decide): ")
 
 	scanner := bufio.NewScanner(q.reader)
 	if !scanner.Scan() {
@@ -182,7 +178,11 @@ func (q *QuestionTable) handleFreeInput() (string, error) {
 	input := strings.TrimSpace(scanner.Text())
 
 	if input == "" {
-		return "", fmt.Errorf("no input provided")
+		res = map[string]interface{}{
+			"answer": "choose the best option",
+		}
+		out, _ := json.Marshal(res)
+		return string(out), nil
 	}
 
 	result := map[string]interface{}{

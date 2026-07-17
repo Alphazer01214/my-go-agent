@@ -34,7 +34,7 @@ type PlanAgent struct {
 
 func NewPlanAgent(model llm.ChatModel, tools *tool.Registry, experts ...*Expert) *PlanAgent {
 	base := NewBaseAgent("plan_agent", model, tools)
-	base.SysPrompt = prompts.PlanAgentSystemPrompt
+	base.sysPrompt = prompts.PlanAgentSystemPrompt
 	return &PlanAgent{
 		BaseAgent:  base,
 		experts:    experts,
@@ -46,7 +46,7 @@ func (a *PlanAgent) Plan() *Plan { return a.plan }
 
 func (a *PlanAgent) Run(ctx context.Context, session *memory.Session, prompt string) (string, error) {
 	a.plan = nil
-	trace := session.Trace()
+	// trace := session.Trace()
 
 	plan, err := a.createPlan(ctx, prompt)
 	if err != nil {
@@ -54,7 +54,8 @@ func (a *PlanAgent) Run(ctx context.Context, session *memory.Session, prompt str
 	}
 	a.plan = plan
 
-	trace.RecordCheckpoint(0, fmt.Sprintf("Plan: %s (%d tasks)", plan.Goal, len(plan.Todos)))
+	// trace: 记录计划创建检查点
+	// trace.RecordCheckpoint(0, fmt.Sprintf("Plan: %s (%d tasks)", plan.Goal, len(plan.Todos)))
 
 	shared := &SharedContext{
 		Background: fmt.Sprintf("Overall goal: %s", plan.Goal),
@@ -64,7 +65,8 @@ func (a *PlanAgent) Run(ctx context.Context, session *memory.Session, prompt str
 	for i := range plan.Todos {
 		todo := &plan.Todos[i]
 
-		trace.RecordCheckpoint(i+1, fmt.Sprintf("Task %d/%d: %s", i+1, len(plan.Todos), todo.Description))
+		// trace: 记录任务开始检查点
+		// trace.RecordCheckpoint(i+1, fmt.Sprintf("Task %d/%d: %s", i+1, len(plan.Todos), todo.Description))
 
 		executor := a.resolveExecutor(todo, shared)
 		subPrompt := fmt.Sprintf("Your task: %s\nComplete this task.", todo.Description)
@@ -96,9 +98,9 @@ func (a *PlanAgent) resolveExecutor(todo *Todo, shared *SharedContext) Agent {
 			return child
 		}
 	}
-	executor := NewToolCallingAgent(a.Model, a.Tools)
-	executor.SetSysPrompt(a.SysPrompt)
-	executor.SetMaxStep(a.MaxStep)
+	executor := NewToolCallingAgent("plan_executor", a.model, a.tools)
+	executor.SetSysPrompt(a.sysPrompt)
+	executor.SetMaxStep(a.maxStep)
 	executor.SetSharedContext(shared)
 	return executor
 }
@@ -106,9 +108,9 @@ func (a *PlanAgent) resolveExecutor(todo *Todo, shared *SharedContext) Agent {
 // createChildFromExpert 基于 expert 创建子 agent，注入共享上下文
 func (a *PlanAgent) createChildFromExpert(expert *Expert, shared *SharedContext) Agent {
 	base := expert.Agent.Base()
-	child := NewToolCallingAgent(base.Model, base.Tools)
-	child.SysPrompt = base.SysPrompt
-	child.MaxStep = base.MaxStep
+	child := NewToolCallingAgent("expert_child", base.model, base.tools)
+	child.sysPrompt = base.sysPrompt
+	child.maxStep = base.maxStep
 	child.SetSharedContext(shared)
 	return child
 }
@@ -145,7 +147,7 @@ func (a *PlanAgent) createPlan(ctx context.Context, userPrompt string) (*Plan, e
 			ResponseFormat: llm.ResponseFormat{Type: "json_object"},
 		},
 	}
-	resp, err := a.Model.Chat(ctx, req)
+	resp, err := a.model.Chat(ctx, req)
 	if err != nil {
 		return nil, err
 	}

@@ -2,7 +2,10 @@ package utils
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
+	"sync/atomic"
+	"time"
 )
 
 // ParseJSON 从 LLM 输出中提取并解析 JSON，支持以下格式：
@@ -121,4 +124,21 @@ func findBalanced(text string, open, close byte) string {
 		}
 	}
 	return ""
+}
+
+// NormalizeJSON 归一化 JSON 字符串，去除多余空格，用于重复调用检测
+func NormalizeJSON(s string) string {
+	s = strings.TrimSpace(s)
+	s = strings.ReplaceAll(s, "\n", "")
+	s = strings.ReplaceAll(s, "\t", "")
+	s = strings.ReplaceAll(s, "  ", "")
+	return s
+}
+
+// GenId 生成唯一 ID，格式为 name_timestamp_counter
+var genIdCounter atomic.Uint64
+
+func GenId(name string) string {
+	n := genIdCounter.Add(1)
+	return fmt.Sprintf("%s_%d_%d", name, time.Now().UnixMilli(), n)
 }

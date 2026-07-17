@@ -15,6 +15,9 @@ const (
 )
 
 type Message struct {
+	ID       string `json:"id,omitempty"`        // 消息唯一 ID（用户消息生成，assistant/tool 继承）
+	ParentID string `json:"parent_id,omitempty"` // 指向所属用户消息的 ID
+
 	Role      Role   `json:"role"`
 	Content   string `json:"content"`
 	Timestamp int64  `json:"timestamp,omitempty"`
@@ -58,11 +61,14 @@ type Tool struct {
 	Function ToolFunction `json:"function"`
 }
 
+// ToolFunction openai 格式
 type ToolFunction struct {
 	Name        string                 `json:"name"`
 	Description string                 `json:"description"`
 	Parameters  map[string]interface{} `json:"parameters"`
 }
+
+// ToolCall openai 格式
 type ToolCall struct {
 	ID       string           `json:"id"`
 	Index    int              `json:"index"`

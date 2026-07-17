@@ -12,7 +12,7 @@ func LoadDotEnv() {
 
 // Agent 配置常量
 const (
-	DefaultMaxSteps     = 30   // 默认最大步数（作为安全阀，主要依赖 LLM 自行判断停止）
+	DefaultMaxSteps     = 1145 // 默认最大步数（作为安全阀，主要依赖 LLM 自行判断停止）
 	DefaultMemorySize   = 50   // 默认记忆窗口大小
 	DefaultReadFileSize = 4096 // 默认读取文件大小（字节）
 )

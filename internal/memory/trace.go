@@ -3,306 +3,154 @@ package memory
 import (
 	"fmt"
 	"my-go-agent/internal/llm"
+	"my-go-agent/internal/utils"
 	"os"
 	"strings"
 	"sync"
 	"time"
 )
 
-// EventType trace 事件类型
+// trace 记录事件，与 session 一一对应
+// event 记录状态
+// diff 记录差分
+
 type EventType string
 
 const (
-	EventUser         EventType = "user"         // 用户输入
-	EventThought      EventType = "thought"      // LLM 推理/中间响应
-	EventToolCall     EventType = "tool_call"    // 工具调用
-	EventResponse     EventType = "response"     // 最终响应（agent 完成）
-	EventCheckpoint   EventType = "checkpoint"   // 手动检查点
-	EventRestore      EventType = "restore"      // 检查点恢复（不可逆）
-	EventSandboxDeny  EventType = "sandbox_deny" // 沙箱拦截（未执行）
-	EventPathFix      EventType = "path_fix"     // 路径自动修正
+	EventUser     EventType = "user"      // 用户输入
+	EventThought  EventType = "thought"   // LLM 推理/中间响应
+	EventToolCall EventType = "tool_call" // 工具调用
+	EventResponse EventType = "response"  // 最终响应（agent 完成）
+	EventSandbox  EventType = "sandbox"   // 沙箱拦截
+	EventRestore  EventType = "restore"   // 检查点恢复（不可逆）
 )
 
-// FileOp 文件操作类型
+// FileOp 文件操作类型，执行 tool 的时候记录，这些都是用于 agent 层面记录的
 type FileOp string
 
 const (
-	FileCreate FileOp = "create" // 创建新文件
-	FileModify FileOp = "modify" // 修改已有文件
-	FileDelete FileOp = "delete" // 删除文件（不可逆）
+	FileCreate FileOp = "create"
+	FileModify FileOp = "modify"
+	FileDelete FileOp = "delete" // 不可逆
+	DirCreate  FileOp = "mkdir"  // 创建目录
 )
 
-// FileChange 文件变更记录
+// FileChange 文件变更记录（用于 trace 展示和回滚）
 type FileChange struct {
-	Path    string // 文件路径
-	Op      FileOp // 操作类型
-	Before  string // 操作前内容（create 时为空）
-	After   string // 操作后内容（delete 时为空）
+	Path   string `json:"path"`
+	Op     FileOp `json:"op"`
+	Before string `json:"before,omitempty"` // 操作前内容（create 时为空）
+	After  string `json:"after,omitempty"`  // 操作后内容（delete 时为空）
 }
 
-// ToolCallRecord 工具调用记录
-type ToolCallRecord struct {
-	Name   string // 工具名称
-	Args   string // 调用参数
-	Result string // 执行结果
-	CallID string // 调用 ID
+// Diff 记录单个事件的状态差分
+type Diff struct {
+	eventId     string
+	msgAdded    int          // 本事件新增的消息数量（用于回滚）
+	fileChanges []FileChange // 本事件的文件变更（Before/After 完整内容）
 }
 
-// Event 单个 trace 事件，通过 ID/ParentID 形成链式结构
-type Event struct {
-	ID        string          // 唯一标识
-	ParentID  string          // 父事件 ID（空 = 链头）
-	Step      int
-	Timestamp time.Time
-	Type      EventType
-	Response  string          // 本步骤的 LLM 输出内容
-	MsgsAdded []llm.Message   // 本步新增到 Session 的消息
-	ToolCalls []ToolCallRecord // 本步执行的工具调用
-	FileDiffs []FileChange    // 本步的文件变更（正向）
-	Reverse   *ReverseDiff    // 反向差分（nil = 不可逆）
-}
-
-// IsReversible 返回此事件是否可逆
-func (e *Event) IsReversible() bool {
-	return e.Reverse != nil
-}
-
-// ReverseDiff 反向差分，用于还原事件造成的影响
-type ReverseDiff struct {
-	MsgsToRemove  int           // 需要移除的消息数量（从尾部）
-	FilesToRevert []FileChange  // 需要还原的文件变更
-}
-
-// Trace 记录执行轨迹，事件通过 ID/ParentID 形成链式结构
-type Trace struct {
-	mu        sync.Mutex
-	id        string
-	agentName string
-	startTime time.Time
-	events    []Event
-	lastID    string // 上一个事件的 ID（空 = 无）
-	seq       int    // 事件序号计数器
-	response  string
-}
-
-// NewTrace 创建新的 Trace 实例
-func NewTrace(agentName string) *Trace {
-	return &Trace{
-		id:        fmt.Sprintf("trace_%d", time.Now().UnixMilli()),
-		agentName: agentName,
-		startTime: time.Now(),
-	}
-}
-
-// appendEvent 追加事件并维护 ID/ParentID 链
-func (t *Trace) appendEvent(e Event) {
-	t.seq++
-	e.ID = fmt.Sprintf("e%d", t.seq)
-	e.ParentID = t.lastID
-	e.Timestamp = time.Now()
-	t.events = append(t.events, e)
-	t.lastID = e.ID
-	if e.Response != "" {
-		t.response = e.Response
-	}
-}
-
-// RecordUser 记录用户输入事件
-func (t *Trace) RecordUser(step int, content string) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.appendEvent(Event{
-		Step:     step,
-		Type:     EventUser,
-		Response: content,
-		Reverse:  &ReverseDiff{}, // 用户输入可逆（从消息中移除）
-	})
-}
-
-// RecordThought 记录 LLM 推理事件
-func (t *Trace) RecordThought(step int, msg llm.Message, stepContent string) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.appendEvent(Event{
-		Step:      step,
-		Type:      EventThought,
-		Response:  stepContent,
-		MsgsAdded: []llm.Message{msg},
-		Reverse:   &ReverseDiff{MsgsToRemove: 1},
-	})
-}
-
-// RecordToolCall 记录工具调用事件
-// fileChanges: 本次工具调用产生的文件变更（正向）
-// reversible: 文件操作是否全部可逆
-func (t *Trace) RecordToolCall(step int, msgs []llm.Message, calls []ToolCallRecord, fileChanges []FileChange) {
-	reversible := true
-	var reverseFiles []FileChange
-
-	// 构建反向文件差分
-	for i := len(fileChanges) - 1; i >= 0; i-- {
-		fc := fileChanges[i]
+// Reverse 返回反向差分（用于回滚）
+// 如果包含 FileDelete 操作，返回 nil（不可逆）
+func (d *Diff) Reverse() *Diff {
+	r := &Diff{eventId: d.eventId, msgAdded: d.msgAdded}
+	for _, fc := range d.fileChanges {
+		rfc := FileChange{Path: fc.Path}
 		switch fc.Op {
 		case FileCreate:
-			// 还原创建 = 删除文件
-			reverseFiles = append(reverseFiles, FileChange{
-				Path: fc.Path, Op: FileDelete, Before: fc.After,
-			})
+			// 回滚创建 = 删除文件
+			rfc.Op = FileDelete
+			rfc.Before = fc.After
 		case FileModify:
-			// 还原修改 = 恢复旧内容
-			reverseFiles = append(reverseFiles, FileChange{
-				Path: fc.Path, Op: FileModify, Before: fc.After, After: fc.Before,
-			})
+			// 回滚修改 = 恢复旧内容
+			rfc.Op = FileModify
+			rfc.Before = fc.After
+			rfc.After = fc.Before
 		case FileDelete:
 			// 删除不可逆
-			reversible = false
+			return nil
+		case DirCreate:
+			// 回滚目录创建 = 尝试删除空目录（非阻塞）
+			rfc.Op = DirCreate
+			rfc.After = "revert"
 		}
+		r.fileChanges = append(r.fileChanges, rfc)
 	}
+	return r
+}
 
-	var rev *ReverseDiff
-	if reversible {
-		rev = &ReverseDiff{
-			MsgsToRemove:  len(msgs),
-			FilesToRevert: reverseFiles,
-		}
+// Event 精确到 tool call 级别
+// json 导出供前端查看
+type Event struct {
+	Id string `json:"id"`
+	// ParentId 一般是 agent 相关事件追溯用户事件
+	ParentId string    `json:"parent_id,omitempty"`
+	Type     EventType `json:"type"`
+	// Recoverable 设为 false 则回溯过程跳过该事件
+	Recoverable bool `json:"recoverable"`
+
+	// 状态信息
+	// messages 记录该 event 产生的消息
+	Messages    []llm.Message `json:"messages"`
+	AgentName   string        `json:"agent_name"`
+	Subject     string        `json:"subject"` // user or model
+	Timestamp   time.Time     `json:"timestamp"`
+	DiffSummary string        `json:"diff_summary"`
+
+	diff *Diff
+}
+
+// newEvent 创建新事件，自动生成 ID
+func newEvent() *Event {
+	return &Event{
+		Id: utils.GenId("event"),
 	}
+}
 
+// IsRecoverable 返回此事件是否可恢复
+func (e *Event) IsRecoverable() bool {
+	return e.Recoverable
+}
+
+// ToolCall 工具调用记录
+// args 需要通过 unmarshal
+type ToolCall struct {
+	Name   string `json:"name"`
+	Args   string `json:"args"`
+	Result string `json:"result"`
+	CallID string `json:"call_id"`
+}
+
+// Trace 记录一个 Agent 的执行轨迹
+// 每个 Agent 拥有独立的 Trace，通过 parent 形成树结构
+type Trace struct {
+	mu        sync.Mutex
+	agentName string
+	parent    *Trace   // 父 Agent 的 Trace（nil = 根）
+	children  []*Trace // 子 Agent 的 Trace
+	events    []Event  // 本 Agent 的事件
+
+	latestEventId string
+	messageIDs    []string // 记录用户 message 的 id 用于用户会话回滚
+}
+
+func NewTrace(agentName string) *Trace {
+	return &Trace{
+		agentName: agentName,
+	}
+}
+
+func (t *Trace) NewChildTrace(childAgentName string) *Trace {
+	child := &Trace{
+		agentName: childAgentName,
+		parent:    t,
+	}
 	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.appendEvent(Event{
-		Step:      step,
-		Type:      EventToolCall,
-		MsgsAdded: msgs,
-		ToolCalls: calls,
-		FileDiffs: fileChanges,
-		Reverse:   rev,
-	})
+	t.children = append(t.children, child)
+	t.mu.Unlock()
+	return child
 }
 
-// RecordResponse 记录最终响应事件
-func (t *Trace) RecordResponse(step int, content string) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.appendEvent(Event{
-		Step:     step,
-		Type:     EventResponse,
-		Response: content,
-		Reverse:  &ReverseDiff{MsgsToRemove: 1},
-	})
-}
-
-// RecordCheckpoint 记录手动检查点（可逆，但恢复操作不可逆）
-func (t *Trace) RecordCheckpoint(step int, name string) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.appendEvent(Event{
-		Step:     step,
-		Type:     EventCheckpoint,
-		Response: name,
-		Reverse:  &ReverseDiff{},
-	})
-}
-
-// RecordSandboxDeny 记录沙箱拦截事件（未执行，无状态变更，可恢复）
-func (t *Trace) RecordSandboxDeny(step int, toolName, reason string) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.appendEvent(Event{
-		Step:     step,
-		Type:     EventSandboxDeny,
-		Response: fmt.Sprintf("%s: %s", toolName, reason),
-		Reverse:  &ReverseDiff{}, // 未执行，无状态变更，可恢复
-	})
-}
-
-// RecordPathFix 记录路径修正事件（信息性，不影响回滚）
-func (t *Trace) RecordPathFix(step int, original, fixed string) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.appendEvent(Event{
-		Step:     step,
-		Type:     EventPathFix,
-		Response: fmt.Sprintf("%s → %s", original, fixed),
-		Reverse:  &ReverseDiff{}, // 信息性事件，可逆（无实际操作）
-	})
-}
-
-// Restore 还原到指定检查点
-// 从最后一个事件向前遍历，逐个应用反向差分
-// 如果遇到不可逆操作，返回错误
-// 恢复操作本身是不可逆的
-func (t *Trace) Restore(checkpointIdx int) error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	if checkpointIdx < 0 || checkpointIdx >= len(t.events) {
-		return fmt.Errorf("invalid checkpoint index: %d", checkpointIdx)
-	}
-
-	cp := t.events[checkpointIdx]
-	if cp.Type != EventCheckpoint {
-		return fmt.Errorf("event %d is not a checkpoint (type: %s)", checkpointIdx, cp.Type)
-	}
-
-	// 检查从 checkpoint 到末尾的所有事件是否可逆
-	for i := checkpointIdx + 1; i < len(t.events); i++ {
-		if !t.events[i].IsReversible() {
-			return fmt.Errorf("cannot restore: event %d (type: %s) is irreversible",
-				i, t.events[i].Type)
-		}
-	}
-
-	// 从后向前应用反向差分
-	for i := len(t.events) - 1; i > checkpointIdx; i-- {
-		e := &t.events[i]
-		if e.Reverse == nil {
-			continue
-		}
-
-		// 还原文件变更
-		for _, fc := range e.Reverse.FilesToRevert {
-			if err := revertFile(fc); err != nil {
-				return fmt.Errorf("revert file %s: %w", fc.Path, err)
-			}
-		}
-	}
-
-	// 截断事件列表（保留 checkpoint 及之前的所有事件）
-	t.events = t.events[:checkpointIdx+1]
-	t.lastID = t.events[checkpointIdx].ID
-
-	// 记录恢复事件（不可逆）
-	t.appendEvent(Event{
-		Step:     cp.Step,
-		Type:     EventRestore,
-		Response: fmt.Sprintf("Restored to checkpoint %d: %s", checkpointIdx, cp.Response),
-		Reverse:  nil, // 恢复操作不可逆
-	})
-
-	return nil
-}
-
-// revertFile 还原单个文件变更
-func revertFile(fc FileChange) error {
-	switch fc.Op {
-	case FileModify:
-		// 恢复文件内容
-		return os.WriteFile(fc.Path, []byte(fc.Before), 0644)
-	case FileCreate:
-		// 还原创建 = 删除文件
-		return os.Remove(fc.Path)
-	case FileDelete:
-		// 还原删除 = 创建文件（如果 Before 不为空）
-		if fc.Before != "" {
-			return os.WriteFile(fc.Path, []byte(fc.Before), 0644)
-		}
-		return nil
-	default:
-		return fmt.Errorf("unknown file op: %s", fc.Op)
-	}
-}
-
-// Events 返回所有事件的快照（线程安全）
 func (t *Trace) Events() []Event {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -311,18 +159,67 @@ func (t *Trace) Events() []Event {
 	return dst
 }
 
-// Last 返回最后一个事件，无事件返回 nil
-func (t *Trace) Last() *Event {
+// AllEvents 返回本 Agent 及所有子 Agent 的事件（扁平化）
+func (t *Trace) AllEvents() []Event {
 	t.mu.Lock()
-	defer t.mu.Unlock()
-	if len(t.events) == 0 {
-		return nil
+	result := make([]Event, len(t.events))
+	copy(result, t.events)
+	children := make([]*Trace, len(t.children))
+	copy(children, t.children)
+	t.mu.Unlock()
+
+	for _, child := range children {
+		result = append(result, child.AllEvents()...)
 	}
-	return &t.events[len(t.events)-1]
+	return result
 }
 
-// Len 返回事件数量
-func (t *Trace) Len() int {
+// AddEvent 添加事件
+func (t *Trace) AddEvent(e Event) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if e.Id == "" {
+		e.Id = utils.GenId("evt")
+	}
+	e.Timestamp = time.Now()
+	t.events = append(t.events, e)
+	t.latestEventId = e.Id
+}
+
+// AddUserMessageId 记录用户 message 的 id
+func (t *Trace) AddUserMessageId(id string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.messageIDs = append(t.messageIDs, id)
+}
+
+// UserMessageIDs 返回用户 message 的 id 列表
+func (t *Trace) UserMessageIDs() []string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	dst := make([]string, len(t.messageIDs))
+	copy(dst, t.messageIDs)
+	return dst
+}
+
+func (t *Trace) AgentName() string {
+	return t.agentName
+}
+
+func (t *Trace) Parent() *Trace {
+	return t.parent
+}
+
+func (t *Trace) Children() []*Trace {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	dst := make([]*Trace, len(t.children))
+	copy(dst, t.children)
+	return dst
+}
+
+// EventCnt 返回事件数量
+func (t *Trace) EventCnt() int {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return len(t.events)
@@ -333,13 +230,261 @@ func (t *Trace) Clear() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.events = nil
-	t.lastID = ""
-	t.seq = 0
-	t.response = ""
-	t.startTime = time.Now()
+	t.latestEventId = ""
+	t.messageIDs = nil
 }
 
-// ==================== 格式化输出 ====================
+// AddUserEvent 记录用户输入事件
+// 用户事件本身可回滚（从消息中移除），但通常不需要
+func (t *Trace) AddUserEvent(step int, content string) {
+	t.AddEvent(Event{
+		Type:        EventUser,
+		Subject:     truncate(content, 80),
+		Recoverable: true,
+		diff:        &Diff{},
+	})
+}
+
+// AddThoughtEvent 记录 LLM 推理事件
+// 思考事件可回滚（移除 assistant 消息）
+func (t *Trace) AddThoughtEvent(step int, msg llm.Message, stepContent string) {
+	t.AddEvent(Event{
+		Type:        EventThought,
+		Messages:    []llm.Message{msg},
+		Subject:     truncate(stepContent, 80),
+		Recoverable: true,
+		diff:        &Diff{msgAdded: 1},
+	})
+}
+
+// AddToolCallEvent 记录工具调用事件
+// calls: 本步执行的工具调用记录
+// fileChanges: 本步的文件变更（正向，含 Before/After 完整内容）
+// msgsAdded: 本步新增到 Session 的消息数量（assistant + tool results）
+func (t *Trace) AddToolCallEvent(step int, calls []ToolCall, fileChanges []FileChange, msgsAdded int) {
+	// 判断是否可恢复：有 FileDelete 则不可逆
+	recoverable := true
+	if len(fileChanges) == 0 {
+		recoverable = false // 无文件变更的工具调用不可回滚（如 exec_command）
+	}
+	for _, fc := range fileChanges {
+		if fc.Op == FileDelete {
+			recoverable = false
+			break
+		}
+		// DirCreate 可恢复（尝试删除空目录，非空则跳过）
+	}
+
+	// 格式化变更摘要
+	summary := formatFileChanges(fileChanges)
+	if len(calls) > 0 {
+		parts := make([]string, 0, len(calls))
+		for _, c := range calls {
+			parts = append(parts, truncate(c.Name+"("+c.Args+")", 60))
+		}
+		callSummary := strings.Join(parts, "; ")
+		if summary != "" {
+			summary = callSummary + " [" + summary + "]"
+		} else {
+			summary = callSummary
+		}
+	}
+
+	t.AddEvent(Event{
+		Type:        EventToolCall,
+		Recoverable: recoverable,
+		diff:        &Diff{msgAdded: msgsAdded, fileChanges: fileChanges},
+		DiffSummary: summary,
+	})
+}
+
+// AddResponseEvent 记录最终响应事件
+// 响应事件可回滚（只是移除消息），Recoverable=true
+func (t *Trace) AddResponseEvent(step int, content string) {
+	t.AddEvent(Event{
+		Type:        EventResponse,
+		Subject:     truncate(content, 120),
+		Recoverable: true,
+		diff:        &Diff{msgAdded: 1},
+	})
+}
+
+// AddSandboxEvent 记录沙箱拦截
+func (t *Trace) AddSandboxEvent(step int, toolName, reason string) {
+	t.AddEvent(Event{
+		Type:        EventSandbox,
+		Subject:     fmt.Sprintf("%s: %s", toolName, reason),
+		Recoverable: false,
+		diff:        &Diff{},
+	})
+}
+
+// AddRestoreEvent 记录恢复操作（不可逆）
+func (t *Trace) AddRestoreEvent(targetId, description string) {
+	t.AddEvent(Event{
+		Type:        EventRestore,
+		Subject:     description,
+		Recoverable: false,
+		diff:        &Diff{},
+	})
+}
+
+// RestoreResult 回滚结果
+type RestoreResult struct {
+	RolledBack    int      // 成功回滚的事件数
+	Skipped       int      // 因不可逆而跳过文件回滚的事件数
+	FilesReverted int      // 成功回滚的文件数
+	SkippedEvents []string // 被跳过的事件摘要（type + subject）
+}
+
+// Restore 回滚到指定事件（eventId 对应的事件保留，之后的事件全部回滚）
+// 硬回溯模式：
+//   - 消息回滚：所有事件的消息都可回滚
+//   - 文件回滚：Recoverable=true 的事件正常回滚文件，Recoverable=false 的跳过文件回滚
+//   - 如果文件回滚过程中发生 IO 错误，返回 error（此时已部分回滚）
+func (t *Trace) Restore(eventId string, session *Session) (*RestoreResult, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	// 1. 找到目标事件
+	targetIdx := -1
+	for i, e := range t.events {
+		if e.Id == eventId {
+			targetIdx = i
+			break
+		}
+	}
+	if targetIdx < 0 {
+		return nil, fmt.Errorf("event not found: %s", eventId)
+	}
+	if targetIdx == len(t.events)-1 {
+		return nil, fmt.Errorf("already at target event, nothing to restore")
+	}
+
+	result := &RestoreResult{}
+
+	// 2. 逆序回滚（硬回溯：遇到不可逆事件跳过文件回滚，但继续回滚消息）
+	for i := len(t.events) - 1; i > targetIdx; i-- {
+		evt := &t.events[i]
+		if evt.diff == nil {
+			// 无 diff 的事件只回滚消息
+			if evt.diff != nil && evt.diff.msgAdded > 0 {
+				session.RemoveLastMessages(evt.diff.msgAdded)
+			}
+			result.RolledBack++
+			continue
+		}
+
+		if evt.Recoverable {
+			// 可恢复：回滚文件 + 消息
+			for j := len(evt.diff.fileChanges) - 1; j >= 0; j-- {
+				fc := evt.diff.fileChanges[j]
+				if err := revertFile(fc); err != nil {
+					// 文件回滚失败，记录已回滚状态后返回 error
+					return result, fmt.Errorf("revert file %s at event %d (%s): %w",
+						fc.Path, i, evt.Type, err)
+				}
+				result.FilesReverted++
+			}
+			if evt.diff.msgAdded > 0 {
+				session.RemoveLastMessages(evt.diff.msgAdded)
+			}
+			result.RolledBack++
+		} else {
+			// 不可恢复：跳过文件回滚，但仍回滚消息
+			if evt.diff.msgAdded > 0 {
+				session.RemoveLastMessages(evt.diff.msgAdded)
+			}
+			result.Skipped++
+			result.SkippedEvents = append(result.SkippedEvents,
+				fmt.Sprintf("[%s] %s", evt.Type, truncate(evt.Subject, 60)))
+		}
+	}
+
+	// 3. 截断事件列表（保留 target 及之前的所有事件）
+	t.events = t.events[:targetIdx+1]
+	t.latestEventId = t.events[targetIdx].Id
+
+	// 4. 记录恢复事件（不可逆）
+	desc := fmt.Sprintf("Restored to %s (rolled_back=%d, skipped=%d, files=%d)",
+		eventId, result.RolledBack, result.Skipped, result.FilesReverted)
+	if len(result.SkippedEvents) > 0 {
+		desc += "\n  Skipped file rollback: " + strings.Join(result.SkippedEvents, ", ")
+	}
+	restoreEvt := Event{
+		Id:          utils.GenId("evt"),
+		Type:        EventRestore,
+		Subject:     desc,
+		Recoverable: false,
+		Timestamp:   time.Now(),
+		diff:        &Diff{},
+	}
+	t.events = append(t.events, restoreEvt)
+	t.latestEventId = restoreEvt.Id
+
+	return result, nil
+}
+
+// CanRestore 检查是否可以回滚到指定事件
+// 硬回溯模式下，只要有后续事件就可以尝试回滚
+// 返回 (ok, willSkip, description)
+func (t *Trace) CanRestore(eventId string) (bool, bool, string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	targetIdx := -1
+	for i, e := range t.events {
+		if e.Id == eventId {
+			targetIdx = i
+			break
+		}
+	}
+	if targetIdx < 0 {
+		return false, false, "event not found"
+	}
+	if targetIdx == len(t.events)-1 {
+		return false, false, "already at target event"
+	}
+
+	// 检查是否有不可逆事件（会跳过文件回滚）
+	willSkip := false
+	for i := targetIdx + 1; i < len(t.events); i++ {
+		if !t.events[i].Recoverable {
+			willSkip = true
+			break
+		}
+	}
+
+	if willSkip {
+		return true, true, "some events have irreversible file changes (messages will still be rolled back)"
+	}
+	return true, false, ""
+}
+
+// revertFile 回滚单个文件/目录变更
+func revertFile(fc FileChange) error {
+	switch fc.Op {
+	case FileModify:
+		// 恢复文件内容
+		return os.WriteFile(fc.Path, []byte(fc.Before), 0644)
+	case FileCreate:
+		// 回滚创建 = 删除文件
+		return os.Remove(fc.Path)
+	case FileDelete:
+		// 删除不可逆（应该在预检查中就被拦截）
+		return fmt.Errorf("cannot revert file deletion: %s", fc.Path)
+	case DirCreate:
+		// 回滚目录创建 = 尝试删除空目录
+		// 如果目录非空（后续有文件写入），静默跳过
+		if err := os.Remove(fc.Path); err != nil {
+			// 目录非空或其他错误，跳过（不视为回滚失败）
+			return nil
+		}
+		return nil
+	default:
+		return fmt.Errorf("unknown file op: %s", fc.Op)
+	}
+}
 
 // Format 格式化完整 trace 输出
 func (t *Trace) Format() string {
@@ -350,167 +495,94 @@ func (t *Trace) Format() string {
 
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("═══ Trace: %s ═══\n", t.agentName))
-	sb.WriteString(fmt.Sprintf("Started: %s | Events: %d\n",
-		t.startTime.Format("15:04:05"), len(events)))
+	sb.WriteString(fmt.Sprintf("Events: %d\n", len(events)))
 
 	for _, e := range events {
-		sb.WriteString(formatEventBlock(e))
+		sb.WriteString(t.FormatEvent(e))
 	}
 	return sb.String()
 }
 
-// FormatEvent 格式化单个事件为一行（表格格式）
+// FormatEvent 格式化单个事件
 func (t *Trace) FormatEvent(e Event) string {
-	return FormatEvent(e)
-}
-
-// FormatEvent 格式化单个事件为一行
-func FormatEvent(e Event) string {
 	ts := e.Timestamp.Format("15:04:05.000")
 	rev := "✓"
-	if !e.IsReversible() {
+	if !e.Recoverable {
 		rev = "✗"
 	}
-	summary := summarizeEvent(e)
-	return fmt.Sprintf(" %2d  %-12s  %-10s  %-50s  %s",
-		e.Step, ts, e.Type, summary, rev)
-}
-
-// formatEventBlock 格式化单个事件为块状显示（仿 OpenCode 风格）
-func formatEventBlock(e Event) string {
-	ts := e.Timestamp.Format("15:04:05.000")
-	var sb strings.Builder
 
 	switch e.Type {
 	case EventUser:
-		sb.WriteString(fmt.Sprintf("\n [%s] %s  user\n", e.ID, ts))
-		sb.WriteString(fmt.Sprintf("  %s\n", truncateStr(e.Response, 200)))
-
+		return fmt.Sprintf("\n[%s] %s  user\n  %s\n", e.Id, ts, e.Subject)
 	case EventThought:
-		sb.WriteString(fmt.Sprintf("\n [%s] %s  step %d  thought\n", e.ID, ts, e.Step))
-		content := e.Response
-		if content == "" {
-			content = "(empty)"
-		}
-		sb.WriteString(fmt.Sprintf("  %s\n", truncateStr(content, 200)))
-
+		return fmt.Sprintf("\n[%s] %s  thought\n  %s\n", e.Id, ts, e.Subject)
 	case EventToolCall:
-		rev := "✓"
-		if !e.IsReversible() {
-			rev = "✗"
+		sb := fmt.Sprintf("\n[%s] %s  tool_call %s\n", e.Id, ts, rev)
+		if e.DiffSummary != "" {
+			sb += fmt.Sprintf("%s\n", e.DiffSummary)
 		}
-		sb.WriteString(fmt.Sprintf("\n [%s] %s  step %d  tool_call %s\n", e.ID, ts, e.Step, rev))
-		for _, tc := range e.ToolCalls {
-			sb.WriteString(fmt.Sprintf("  ⏺ %s(%s)\n", tc.Name, truncateStr(tc.Args, 60)))
-			sb.WriteString(fmt.Sprintf("    └─ %s\n", truncateStr(tc.Result, 100)))
-		}
-		for _, fc := range e.FileDiffs {
-			sb.WriteString(fmt.Sprintf("  📄 %s [%s]\n", fc.Path, fc.Op))
-			if fc.Op != FileDelete && fc.Before != "" {
-				sb.WriteString(fmt.Sprintf("    before: %s\n", truncateStr(fc.Before, 80)))
-			}
-			if fc.Op != FileDelete && fc.After != "" {
-				sb.WriteString(fmt.Sprintf("    after:  %s\n", truncateStr(fc.After, 80)))
+		if e.diff != nil {
+			for _, fc := range e.diff.fileChanges {
+				sb += formatFileChangeDetail(fc)
 			}
 		}
-
+		return sb
 	case EventResponse:
-		sb.WriteString(fmt.Sprintf("\n [%s] %s  step %d  response ✓\n", e.ID, ts, e.Step))
-		content := e.Response
-		if content == "" {
-			content = "(empty)"
-		}
-		sb.WriteString(fmt.Sprintf("  %s\n", truncateStr(content, 300)))
-
-	case EventCheckpoint:
-		sb.WriteString(fmt.Sprintf("\n [%s] %s  step %d  checkpoint ✓\n", e.ID, ts, e.Step))
-		if e.Response != "" {
-			sb.WriteString(fmt.Sprintf("  %s\n", truncateStr(e.Response, 100)))
-		}
-
+		return fmt.Sprintf("\n[%s] %s  response\n  %s\n", e.Id, ts, e.Subject)
+	case EventSandbox:
+		return fmt.Sprintf("\n[%s] %s  sandbox\n  %s\n", e.Id, ts, e.Subject)
 	case EventRestore:
-		sb.WriteString(fmt.Sprintf("\n [%s] %s  step %d  restore ✗ (irreversible)\n", e.ID, ts, e.Step))
-		sb.WriteString(fmt.Sprintf("  %s\n", truncateStr(e.Response, 100)))
-
-	case EventSandboxDeny:
-		sb.WriteString(fmt.Sprintf("\n [%s] %s  step %d  sandbox ✗\n", e.ID, ts, e.Step))
-		sb.WriteString(fmt.Sprintf("  %s\n", truncateStr(e.Response, 200)))
-
-	case EventPathFix:
-		sb.WriteString(fmt.Sprintf("\n [%s] %s  step %d  path_fix\n", e.ID, ts, e.Step))
-		sb.WriteString(fmt.Sprintf("  %s\n", truncateStr(e.Response, 200)))
-
+		return fmt.Sprintf("\n[%s] %s  restore (irreversible)\n  %s\n", e.Id, ts, e.Subject)
 	default:
-		sb.WriteString(fmt.Sprintf("\n [%s] %s  step %d  %s\n", e.ID, ts, e.Step, e.Type))
-	}
-
-	return sb.String()
-}
-
-// summarizeEvent 生成事件摘要
-func summarizeEvent(e Event) string {
-	switch e.Type {
-	case EventUser:
-		return truncateStr(e.Response, 80)
-
-	case EventThought:
-		content := e.Response
-		if content == "" {
-			return "(empty)"
-		}
-		return truncateStr(content, 80)
-
-	case EventToolCall:
-		if len(e.ToolCalls) == 0 {
-			return "tool_call (no details)"
-		}
-		parts := make([]string, 0, len(e.ToolCalls))
-		for _, tc := range e.ToolCalls {
-			parts = append(parts, fmt.Sprintf("%s(%s)", tc.Name, truncateStr(tc.Args, 30)))
-		}
-		s := strings.Join(parts, "; ")
-		// 附加文件变更信息
-		if len(e.FileDiffs) > 0 {
-			s += fmt.Sprintf(" [%d file changes]", len(e.FileDiffs))
-		}
-		return truncateStr(s, 100)
-
-	case EventResponse:
-		return truncateStr(e.Response, 120)
-
-	case EventCheckpoint:
-		return truncateStr(e.Response, 60)
-
-	case EventRestore:
-		return truncateStr(e.Response, 80)
-
-	case EventSandboxDeny:
-		return truncateStr(e.Response, 100)
-
-	case EventPathFix:
-		return truncateStr(e.Response, 80)
-
-	default:
-		return string(e.Type)
+		return fmt.Sprintf("\n[%s] %s  %s\n", e.Id, ts, e.Type)
 	}
 }
 
-func truncateStr(s string, maxLen int) string {
-	s = flattenText(s)
-	if len(s) <= maxLen {
-		return s
+// Last 返回最后一个事件
+func (t *Trace) Last() *Event {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if len(t.events) == 0 {
+		return nil
 	}
-	return s[:maxLen] + "..."
+	return &t.events[len(t.events)-1]
 }
 
-// flattenText 将换行替换为空格，压缩连续空格
-func flattenText(s string) string {
+// formatFileChanges 格式化文件变更摘要（单行）
+func formatFileChanges(changes []FileChange) string {
+	if len(changes) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(changes))
+	for _, fc := range changes {
+		parts = append(parts, fmt.Sprintf("%s[%s]", fc.Path, fc.Op))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// formatFileChangeDetail 格式化单个文件变更详情（多行）
+func formatFileChangeDetail(fc FileChange) string {
+	sb := fmt.Sprintf("  📄 %s [%s]\n", fc.Path, fc.Op)
+	if fc.Op != FileDelete && fc.Before != "" {
+		sb += fmt.Sprintf("    before: %s\n", truncate(fc.Before, 80))
+	}
+	if fc.Op != FileDelete && fc.After != "" {
+		sb += fmt.Sprintf("    after:  %s\n", truncate(fc.After, 80))
+	}
+	return sb
+}
+
+// truncate 截断字符串，将换行替换为空格
+func truncate(s string, maxLen int) string {
 	s = strings.ReplaceAll(s, "\n", " ")
 	s = strings.ReplaceAll(s, "\r", "")
 	s = strings.ReplaceAll(s, "\t", " ")
-	// 压缩连续空格
 	for strings.Contains(s, "  ") {
 		s = strings.ReplaceAll(s, "  ", " ")
 	}
-	return strings.TrimSpace(s)
+	s = strings.TrimSpace(s)
+	if len(s) > maxLen {
+		return s[:maxLen] + "..."
+	}
+	return s
 }

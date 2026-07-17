@@ -35,7 +35,7 @@ func (e *EditFile) Parameters() map[string]interface{} {
 		"properties": map[string]interface{}{
 			"path": map[string]interface{}{
 				"type":        "string",
-				"description": "Relative file path (e.g. \"internal/agent/agent.go\")",
+				"description": "Relative file path from project root (e.g. \"internal/agent/agent.go\"). NEVER use absolute paths",
 			},
 			"old_string": map[string]interface{}{
 				"type":        "string",
@@ -70,7 +70,7 @@ func (e *EditFile) Call(ctx context.Context, args string) (string, error) {
 	// 读取文件
 	data, err := os.ReadFile(arg.Path)
 	if err != nil {
-		return "", fmt.Errorf("[edit_file] read file: %w", err)
+		return "", pathError("edit_file", arg.Path, err)
 	}
 
 	content := string(data)

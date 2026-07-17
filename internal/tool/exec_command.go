@@ -26,7 +26,7 @@ func (e *ExecCommand) Name() string {
 }
 
 func (e *ExecCommand) Description() string {
-	return "Execute shell command. ONLY use when no other tool works. For files: read_file/write_file/edit_file. For search: search_file/glob. For dirs: list_dir."
+	return "Execute shell command. STRICTLY FORBIDDEN for: reading files (use read_file), listing dirs (use list_dir), finding files (use glob), searching content (use search_file), writing files (use write_file), editing files (use edit_file), creating dirs (use make_dir). ONLY use for: running builds, tests, git, compilers, package managers, or tasks no other tool handles."
 }
 
 func (e *ExecCommand) Parameters() map[string]interface{} {

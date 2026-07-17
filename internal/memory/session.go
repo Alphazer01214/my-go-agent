@@ -2,8 +2,8 @@ package memory
 
 import (
 	"context"
-	"fmt"
 	"my-go-agent/internal/llm"
+	"my-go-agent/internal/utils"
 	"sync"
 	"time"
 )
@@ -29,7 +29,7 @@ type Session struct {
 	agentName  string
 	createdAt  time.Time
 	messages   []llm.Message
-	systemSet  bool      // system message 是否已添加
+	systemSet  bool // system message 是否已添加
 	trace      *Trace
 	todoList   *TodoList
 	compressor Compressor
@@ -48,10 +48,10 @@ type SessionOpts struct {
 func NewSession(opts SessionOpts) *Session {
 	agentName := opts.AgentName
 	if agentName == "" {
-		agentName = "default"
+		agentName = utils.GenId("agent")
 	}
 	return &Session{
-		id:         fmt.Sprintf("session_%d", time.Now().UnixMilli()),
+		id:         utils.GenId("session"),
 		agentName:  agentName,
 		createdAt:  time.Now(),
 		trace:      NewTrace(agentName),
@@ -228,6 +228,17 @@ func (s *Session) Compress(ctx context.Context) error {
 	}
 	s.messages = compressed
 	return nil
+}
+
+// RestoreToEvent 回滚到指定事件（硬回溯：不可逆事件跳过文件回滚，消息仍回滚）
+func (s *Session) RestoreToEvent(eventId string) (*RestoreResult, error) {
+	return s.trace.Restore(eventId, s)
+}
+
+// CanRestore 检查是否可以回滚到指定事件
+// 返回 (ok, willSkip, description)
+func (s *Session) CanRestore(eventId string) (bool, bool, string) {
+	return s.trace.CanRestore(eventId)
 }
 
 // Reset 清空消息和 trace（重新开始会话，保留 project 引用）

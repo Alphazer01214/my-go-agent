@@ -31,7 +31,7 @@ func (l *ListDir) Parameters() map[string]interface{} {
 		"properties": map[string]interface{}{
 			"path": map[string]interface{}{
 				"type":        "string",
-				"description": "Relative directory path (e.g. \"internal/agent\" or \".\")",
+				"description": "Relative directory path from project root (e.g. \"internal/agent\" or \".\"). NEVER use absolute paths",
 			},
 		},
 		"required": []string{"path"},
@@ -49,7 +49,7 @@ func (l *ListDir) Call(ctx context.Context, args string) (string, error) {
 	arg.Path = NormalizePath(arg.Path)
 	entries, err := os.ReadDir(arg.Path)
 	if err != nil {
-		return "", fmt.Errorf("[list_dir] %w", err)
+		return "", pathError("list_dir", arg.Path, err)
 	}
 	result := ""
 	for _, entry := range entries {

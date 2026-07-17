@@ -7,12 +7,8 @@ import (
 	"time"
 )
 
-// ==================== Common ====================
-
 // defaultLogFunc 默认日志输出函数
 func defaultLogFunc(msg string) { fmt.Println(msg) }
-
-// ==================== Agent Middleware ====================
 
 // AgentMiddleware Agent 中间件类型
 type AgentMiddleware func(Agent) Agent
@@ -57,8 +53,6 @@ func (a *AgentWithLog) Run(ctx context.Context, prompt string) (string, error) {
 		a.agent.Name(), duration))
 	return result, nil
 }
-
-// ==================== Chat Middleware ====================
 
 // ChatModelMiddleware ChatModel 中间件类型
 type ChatModelMiddleware func(llm.ChatModel) llm.ChatModel
